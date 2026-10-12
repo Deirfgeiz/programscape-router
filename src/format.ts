@@ -1,4 +1,5 @@
 import type { CapabilityOrder } from "./order.js";
+import type { ProgramscapeSyncStatus } from "./programscape/sync.js";
 import type { RouterStatus } from "./router.js";
 import type { Balance } from "./types.js";
 
@@ -32,6 +33,17 @@ function formatOrder(order: CapabilityOrder): string[] {
   return lines;
 }
 
+export function formatSync(sync: ProgramscapeSyncStatus): string[] {
+  if (sync.sync === "off") {
+    return [`Programscape sync: off${sync.note ? `. ${sync.note}` : " (run `programscape-router connect` to turn it on)"}`];
+  }
+  const when = sync.lastSyncedAt ? `last synced ${sync.lastSyncedAt}` : "not synced yet";
+  const how = sync.mode === "auto" ? "automatic, at most every 6 hours per provider" : "manual: `programscape-router sync`";
+  const lines = [`Programscape sync: on (${when}; ${how})`];
+  for (const entry of sync.providers) lines.push(`  ${entry.provider}: ${entry.message} (${entry.attemptedAt})`);
+  return lines;
+}
+
 export function formatStatus(status: RouterStatus): string {
   const lines: string[] = [
     `programscape-router status at ${status.asOf}`,
@@ -49,6 +61,7 @@ export function formatStatus(status: RouterStatus): string {
     if (provider.balanceNote) lines.push(`    ${provider.balanceNote}`);
   }
   lines.push("", ...formatOrder(status.order.search), "", ...formatOrder(status.order.scrape), "");
+  lines.push(...formatSync(status.programscape), "");
   lines.push("Each balance is shown on its own, in its own unit. Balances are never added together.");
   return lines.join("\n");
 }

@@ -1,6 +1,7 @@
 import { type RouterConfig, loadConfig } from "./config.js";
 import { Ledger, defaultLedgerPath } from "./ledger.js";
 import { type CapabilityOrder, type ProviderStanding, type SkippedEntry, computeOrder } from "./order.js";
+import { type BalanceSync, type ProgramscapeSyncStatus, type ProviderReading, type SyncResult, createBalanceSync } from "./programscape/sync.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter, supports } from "./providers/index.js";
 import {
   type Attempt,
@@ -56,6 +57,8 @@ export interface RouterStatus {
   ledgerPath: string | null;
   providers: ProviderStatus[];
   order: Record<Capability, CapabilityOrder>;
+  /** The opt-in balance sync to the founder's Programscape plan, from local files only (no network call). */
+  programscape: ProgramscapeSyncStatus;
 }
 
 export interface Router {
@@ -63,7 +66,12 @@ export interface Router {
   scrape(request: ScrapeRequest): Promise<ScrapeResponse>;
   /** Enabled providers, the order per capability with reasons, and balances with their read time. */
   status(options?: { refresh?: boolean }): Promise<RouterStatus>;
-  /** Resolves when pending ledger writes have finished. */
+  /**
+   * Re-reads live balances and sends them to the founder's Programscape plan (after `connect`). Only
+   * { programId, amount, unit, asOf, source: "router" } is sent, for balances read from a provider's own endpoint.
+   */
+  syncBalances(): Promise<SyncResult[]>;
+  /** Resolves when pending ledger writes and background syncs have finished. */
   flush(): Promise<void>;
   readonly configPath: string | null;
 }
@@ -106,6 +114,8 @@ export function createRouter(options: RouterOptions = {}): Router {
   const configPath = located.path ?? null;
   const ledgerPath = options.ledgerPath === false ? null : (options.ledgerPath ?? defaultLedgerPath(env));
   const ledger = ledgerPath ? new Ledger(ledgerPath, log) : undefined;
+  // Off until `connect`; with `programscape.sync: "auto"`, runs in the background after a balance read.
+  const balanceSync: BalanceSync = createBalanceSync({ env, config, fetch: fetchImpl, now, log });
 
   const keys = new Map<ProviderId, string>();
   for (const id of PROVIDER_IDS) {
@@ -155,7 +165,7 @@ export function createRouter(options: RouterOptions = {}): Router {
     );
   }
 
-  async function readBalance(id: ProviderId, refresh: boolean): Promise<BalanceCache> {
+  async function readBalance(id: ProviderId, refresh: boolean, autoSync = true): Promise<BalanceCache> {
     const adapter = ADAPTERS[id];
     if (!adapter.balance || !keys.has(id) || disabled.has(id)) return { at: 0, balances: [] };
     const cached = balanceCache.get(id);
@@ -168,6 +178,8 @@ export function createRouter(options: RouterOptions = {}): Router {
         const reading = await adapter.balance!(context(id, BALANCE_TIMEOUT_MS));
         const entry = { at: now().getTime(), balances: reading.balances };
         balanceCache.set(id, entry);
+        // Fire and forget: never awaited, so a search or scrape never waits on Programscape.
+        if (autoSync) void balanceSync.afterBalanceRead(id, reading.balances);
         return entry;
       } catch (error) {
         if (error instanceof ProviderCallError && error.outcome === "unauthorized") disable(id, error.status);
@@ -341,11 +353,24 @@ export function createRouter(options: RouterOptions = {}): Router {
         ledgerPath,
         providers,
         order: { search: orderFor("search", all), scrape: orderFor("scrape", all) },
+        programscape: await balanceSync.status(),
       };
     },
 
-    flush() {
-      return ledger?.flush() ?? Promise.resolve();
+    async syncBalances() {
+      const enabled = PROVIDER_IDS.filter((id) => keys.has(id) && !disabled.has(id));
+      const readings: ProviderReading[] = await Promise.all(
+        enabled.map(async (id) => {
+          // Only what the provider reported live; credits from config are never part of a reading.
+          const reading = await readBalance(id, true, false);
+          return { provider: id, balances: reading.balances, ...(reading.note ? { note: reading.note } : {}) };
+        }),
+      );
+      return balanceSync.sync(readings);
+    },
+
+    async flush() {
+      await Promise.all([ledger?.flush(), balanceSync.flush()]);
     },
   };
 }

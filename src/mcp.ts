@@ -75,7 +75,8 @@ export function createMcpServer(router: Router): McpServer {
       title: "Credits and routing order",
       description:
         "Show which providers are enabled (by which API keys are set), the order each capability (search, scrape) will try them in with the reason for each position, " +
-        "every balance on its own with its unit and when it was read (`asOf`), and any provider marked spent or disabled this session. " +
+        "every balance on its own with its unit and when it was read (`asOf`), any provider marked spent or disabled this session, " +
+        "and whether the founder's opt-in balance sync to their Programscape plan is on (`programscape`). " +
         "Balances are listed one by one in their own units and are never combined into a total. Nothing is ranked on quality.",
       inputSchema: {
         refresh: z.boolean().optional().describe("Re-read balances from providers that publish them, instead of using the cached reading."),

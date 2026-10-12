@@ -26,7 +26,21 @@ const credit = z
 const providerSettings = z.strictObject({
   paid: z.boolean().optional(),
   credits: z.array(credit).optional(),
+  /**
+   * Which kept, approved program on the founder's Programscape plan this provider's live balance belongs to,
+   * when the plan has several (or none) from this provider. Used only by the opt-in balance sync.
+   */
+  programscapeProgram: z.string().min(1).max(200).optional(),
 });
+
+const programscapeSettings = z
+  .strictObject({
+    sync: z.enum(["manual", "auto"], {
+      error: () => 'Use "manual" (only when you run `programscape-router sync`) or "auto".',
+    }),
+  })
+  .partial()
+  .describe("Opt-in balance sync to the founder's Programscape plan. Nothing is sent until `programscape-router connect`.");
 
 const orderList = z
   .array(providerId)
@@ -40,6 +54,7 @@ export const configSchema = z.strictObject({
     })
     .optional(),
   providers: z.partialRecord(providerId, providerSettings).optional(),
+  programscape: programscapeSettings.optional(),
   timeoutMs: z.number().int().min(1000).max(300_000).optional(),
 });
 
