@@ -112,7 +112,7 @@ describe("check", () => {
     ]);
 
     const text = formatCheck(report);
-    expect(text).toContain("exa (EXA_API_KEY)");
+    expect(text).toContain("exa (EXA_API_KEY, from the environment)");
     expect(text).toContain("  search   ok                        0 ms  3 results");
     expect(text).toContain(`  scrape   ok                        0 ms  markdown, ${PAGE.length} chars`);
     expect(text).toContain("  balance  -                               no public balance endpoint (add your credits in config)");
@@ -257,9 +257,9 @@ describe("check", () => {
     const code = await main(["check"], streams, { env: { TAVILY_API_KEY: "tvly-key-1" }, fetch });
     expect(code).toBe(0);
     const text = out.join("");
-    expect(text).toContain("exa: skipped (EXA_API_KEY is not set)");
-    expect(text).toContain("parallel: skipped (PARALLEL_API_KEY is not set)");
-    expect(text).toContain("tavily (TAVILY_API_KEY)");
+    expect(text).toContain("exa: skipped (no key: set EXA_API_KEY or run `programscape-router keys set exa`)");
+    expect(text).toContain("parallel: skipped (no key: set PARALLEL_API_KEY or run `programscape-router keys set parallel`)");
+    expect(text).toContain("tavily (TAVILY_API_KEY, from the environment)");
     expect(text).toContain("PASS: 3 of 3 calls passed; 4 providers skipped (no key).");
     expect(calls.every((call) => new URL(call.url).host === "api.tavily.com")).toBe(true);
   });

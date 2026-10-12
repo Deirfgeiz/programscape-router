@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { main } from "../src/cli-main.js";
@@ -94,13 +95,50 @@ describe("connect", () => {
     expect(printed.join("\n")).not.toContain("TOKENSECRET");
   });
 
+  it("listens for the sign-in redirect on 127.0.0.1 only, so no firewall asks to open a port", async () => {
+    const fake = fakeProgramscape();
+    const env = homes();
+    const reachable: Record<string, boolean> = {};
+    const tryConnect = (host: string, port: number) =>
+      new Promise<boolean>((resolve) => {
+        const socket = createConnection({ host, port });
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve(true);
+        });
+        socket.once("error", () => resolve(false));
+      });
+    await connect({
+      env,
+      fetch: fake.fetch,
+      now: () => START,
+      print: () => {},
+      openBrowser: async (authorizationUrl) => {
+        const port = Number(new URL(new URL(authorizationUrl).searchParams.get("redirect_uri") ?? "").port);
+        reachable.loopback = await tryConnect("127.0.0.1", port);
+        reachable.ipv6Loopback = await tryConnect("::1", port);
+        const lan = Object.values(networkInterfaces())
+          .flat()
+          .find((address) => address && address.family === "IPv4" && !address.internal);
+        if (lan) reachable.lan = await tryConnect(lan.address, port);
+        await fake.browser(authorizationUrl);
+      },
+    });
+    expect(reachable.loopback).toBe(true);
+    expect(reachable.ipv6Loopback).toBe(false);
+    if ("lan" in reachable) expect(reachable.lan).toBe(false);
+  });
+
   it("stores the tokens with mode 600 in a directory with mode 700", async () => {
     const fake = fakeProgramscape();
     const env = homes();
     const result = await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
     expect(result.tokenPath).toBe(join(env.XDG_CONFIG_HOME, "programscape-router", "programscape-token.json"));
-    expect(statSync(result.tokenPath).mode & 0o777).toBe(0o600);
-    expect(statSync(dirname(result.tokenPath)).mode & 0o777).toBe(0o700);
+    // POSIX modes don't exist on Windows; there the profile folder's own permissions protect the file.
+    if (process.platform !== "win32") {
+      expect(statSync(result.tokenPath).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(result.tokenPath)).mode & 0o777).toBe(0o700);
+    }
     const stored = await readTokenFile(env);
     expect(stored).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET", refreshToken: "ps-REFRESH-1-TOKENSECRET" });
     expect(stored?.expiresAt).toBe("2026-10-11T13:00:00.000Z");
@@ -325,7 +363,7 @@ describe("sync", () => {
     expect(refreshes[0]?.get("refresh_token")).toBe("ps-REFRESH-1-TOKENSECRET");
     expect(refreshes[0]?.get("client_id")).toBe("client-1");
     expect(await readTokenFile(env)).toMatchObject({ accessToken: "ps-ACCESS-2-TOKENSECRET", refreshToken: "ps-REFRESH-2-TOKENSECRET" });
-    expect(statSync(tokenPath(env)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(tokenPath(env)).mode & 0o777).toBe(0o600);
     expect(reports(fake)).toHaveLength(1);
     expect(fake.toolCalls.at(-1)?.authorization).toBe("Bearer ps-ACCESS-2-TOKENSECRET");
   });

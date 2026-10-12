@@ -1,38 +1,30 @@
 /**
  * Local files for the opt-in Programscape balance sync.
  *
- * - The token file holds the OAuth tokens. It exists only between `connect` and `disconnect`, and is written with
- *   mode 600 inside a directory with mode 700. Tokens are never printed or logged.
+ * - The token file holds the OAuth tokens. It exists only between `connect` and `disconnect`. On macOS and Linux it
+ *   is written with mode 600 inside a directory with mode 700. On Windows, POSIX modes don't apply: the file sits in
+ *   the user's own profile folder (%LOCALAPPDATA%), which Windows restricts to that user by default. Tokens are
+ *   never printed or logged.
  * - The client file caches the dynamically registered public client (no secret), so a later `connect` can reuse it
  *   when the same loopback port is free.
  * - The sync state file records, per provider, when a sync was last tried and how it ended. It holds program ids,
  *   times and the outcome, never a token, key, query or URL.
  */
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { stateDir, tokenDir } from "../paths.js";
 import { PROVIDER_IDS, type ProviderId } from "../types.js";
 
-export function configDir(env: NodeJS.ProcessEnv): string {
-  const base = env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : join(homedir(), ".config");
-  return join(base, "programscape-router");
+export function tokenPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
+  return join(tokenDir(env, platform), "programscape-token.json");
 }
 
-function stateDir(env: NodeJS.ProcessEnv): string {
-  const base = env.XDG_STATE_HOME && env.XDG_STATE_HOME.length > 0 ? env.XDG_STATE_HOME : join(homedir(), ".local", "state");
-  return join(base, "programscape-router");
+export function clientPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
+  return join(tokenDir(env, platform), "programscape-client.json");
 }
 
-export function tokenPath(env: NodeJS.ProcessEnv): string {
-  return join(configDir(env), "programscape-token.json");
-}
-
-export function clientPath(env: NodeJS.ProcessEnv): string {
-  return join(configDir(env), "programscape-client.json");
-}
-
-export function syncStatePath(env: NodeJS.ProcessEnv): string {
-  return join(stateDir(env), "programscape-sync.json");
+export function syncStatePath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
+  return join(stateDir(env, platform), "programscape-sync.json");
 }
 
 export interface TokenFile {
@@ -73,14 +65,26 @@ export interface SyncState {
   providers: Partial<Record<ProviderId, ProviderSyncRecord>>;
 }
 
-/** Write JSON with mode 600 in a directory with mode 700, atomically. */
+/**
+ * chmod, except on Windows, where it can only toggle the read-only flag. There the folder's own permissions (the
+ * user's profile, restricted to that user by default) are what protect the file, so a chmod failure never stops a write.
+ */
+async function restrict(path: string, mode: number): Promise<void> {
+  if (process.platform === "win32") {
+    await chmod(path, mode).catch(() => undefined);
+    return;
+  }
+  await chmod(path, mode);
+}
+
+/** Write JSON atomically: mode 600 in a directory with mode 700 on macOS and Linux; the user's profile folder on Windows. */
 export async function writeSecureJson(path: string, value: unknown): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await chmod(dir, 0o700);
+  await restrict(dir, 0o700);
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await chmod(temp, 0o600);
+  await restrict(temp, 0o600);
   await rename(temp, path);
 }
 

@@ -2,8 +2,13 @@
 // Pack the package, install the tarball into a fresh project, and use it the way a consumer would:
 // an ESM import, a TypeScript type check against the shipped .d.ts files, and the bin.
 // Run after `npm run build`. Needs the npm registry for the package's dependencies.
+//
+//   --keychain     also do a real set -> get -> remove round trip in the OS keychain (macOS, Windows), under the
+//                  test service "programscape-router-ci", never the real one
+//   --no-keychain  on a machine with no keychain (Linux without a Secret Service): check that `keys` explains
+//                  the problem and that the router still works with environment variables
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,14 +16,24 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const work = mkdtempSync(join(tmpdir(), "psr-pack-smoke-"));
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const mode = process.argv.includes("--keychain") ? "keychain" : process.argv.includes("--no-keychain") ? "no-keychain" : "basic";
+// Every bin run uses a test keychain service, so a developer's real stored keys are never read or touched.
+const TEST_SERVICE = mode === "keychain" ? "programscape-router-ci" : "programscape-router-smoke-empty";
 
 function run(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
 
+// npm through node and npm's own entry point when `npm run` gave us one: Node won't spawn npm.cmd on Windows
+// without a shell.
+function npm(args, cwd) {
+  const cli = process.env.npm_execpath;
+  if (cli && /\.c?js$/.test(cli)) return run(process.execPath, [cli, ...args], cwd);
+  return execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], shell: process.platform === "win32" });
+}
+
 try {
-  const [packed] = JSON.parse(run(npm, ["pack", "--json", "--pack-destination", work], root));
+  const [packed] = JSON.parse(npm(["pack", "--json", "--pack-destination", work], root));
   const tarball = join(work, packed.filename);
   const files = packed.files.map((file) => file.path);
   console.log(`packed ${packed.filename}: ${files.length} files, ${packed.size} bytes`);
@@ -32,7 +47,7 @@ try {
   mkdirSync(app);
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "psr-smoke", private: true, type: "module" }, null, 2));
   const devDeps = pkg.devDependencies;
-  run(npm, ["install", "--no-audit", "--no-fund", "--loglevel=error", tarball, `typescript@${devDeps.typescript}`, `@types/node@${devDeps["@types/node"]}`], app);
+  npm(["install", "--no-audit", "--no-fund", "--loglevel=error", tarball, `typescript@${devDeps.typescript}`, `@types/node@${devDeps["@types/node"]}`], app);
 
   // 1. ESM import of the public API, with no keys and no network.
   writeFileSync(
@@ -101,16 +116,94 @@ export async function use(): Promise<void> {
   run(process.execPath, [join(app, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.json"], app);
   console.log("types ok: the shipped .d.ts files type-check with skipLibCheck off");
 
-  // 3. The bin.
-  const bin = join(app, "node_modules", ".bin", "programscape-router");
-  const version = run(bin, ["--version"], app).trim();
-  if (version !== pkg.version) throw new Error(`bin --version printed ${version}`);
-  const env = { PATH: process.env.PATH ?? "", HOME: work };
-  const check = spawnSync(bin, ["check", "--json"], { cwd: app, env, encoding: "utf8" });
+  // 3. The bin. npm made the shim; the CLI is run through node so this works the same on Windows.
+  const shim = join(app, "node_modules", ".bin", process.platform === "win32" ? "programscape-router.cmd" : "programscape-router");
+  if (!existsSync(shim)) throw new Error(`npm did not create the bin shim at ${shim}`);
+  const cliPath = join(app, "node_modules", "programscape-router", "dist", "cli.js");
+  const home = join(work, "home");
+  mkdirSync(home);
+  const baseEnv = {
+    PATH: process.env.PATH ?? "",
+    SystemRoot: process.env.SystemRoot ?? "",
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, "AppData", "Roaming"),
+    LOCALAPPDATA: join(home, "AppData", "Local"),
+    XDG_CONFIG_HOME: join(home, "config"),
+    XDG_STATE_HOME: join(home, "state"),
+    PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: TEST_SERVICE,
+  };
+  // On Linux and macOS the keychain needs the session's own variables (D-Bus, the user) to reach the store.
+  for (const name of ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP"]) {
+    if (process.env[name]) baseEnv[name] = process.env[name];
+  }
+  const cli = (args, { env = {}, input } = {}) =>
+    spawnSync(process.execPath, [cliPath, ...args], { cwd: app, env: { ...baseEnv, ...env }, encoding: "utf8", input, timeout: 60_000 });
+
+  const version = cli(["--version"]);
+  if (version.stdout.trim() !== pkg.version) throw new Error(`bin --version printed ${version.stdout}`);
+  const check = cli(["check", "--json"]);
   const report = JSON.parse(check.stdout);
   if (check.status !== 1 || report.attempted !== 0) throw new Error(`check with no keys: exit ${check.status}, attempted ${report.attempted}`);
-  console.log(`bin ok: --version ${version}; check with no keys exits 1 and attempts nothing`);
+  console.log(`bin ok: --version ${version.stdout.trim()}; check with no keys exits 1 and attempts nothing`);
+
+  if (mode === "keychain") keychainRoundTrip(cli, app);
+  if (mode === "no-keychain") noKeychain(cli);
   console.log("pack smoke passed");
 } finally {
   if (!process.env.KEEP_SMOKE) rmSync(work, { recursive: true, force: true });
+}
+
+function expectRun(result, code, what) {
+  if (result.error) throw new Error(`${what}: ${result.error.message}`);
+  if (result.status !== code) throw new Error(`${what}: exit ${result.status}, expected ${code}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+  return result;
+}
+
+/** A real set -> get -> remove round trip in the OS keychain, under the test service. */
+function keychainRoundTrip(cli, app) {
+  const secret = `exa-ci-${Math.random().toString(36).slice(2)}${Date.now()}`;
+  const leaked = (result) => `${result.stdout}${result.stderr}`.includes(secret);
+  try {
+    cli(["keys", "remove", "exa"]); // a leftover from an earlier run, if any
+    const set = expectRun(cli(["keys", "set", "exa", "--stdin"], { input: `${secret}\n` }), 0, "keys set --stdin");
+    if (!/^Saved the Exa key in /m.test(set.stdout) || leaked(set)) throw new Error(`keys set printed: ${set.stdout}`);
+
+    // The native module itself reads back exactly what was stored.
+    const read = spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", `const { AsyncEntry } = await import("@napi-rs/keyring"); process.stdout.write(String(await new AsyncEntry("${TEST_SERVICE}", "EXA_API_KEY").getPassword()));`],
+      { cwd: join(app, "node_modules", "programscape-router"), encoding: "utf8", timeout: 60_000 },
+    );
+    if (read.stdout !== secret) throw new Error(`the keychain did not hold the key (got ${read.stdout.length} chars; ${read.stderr})`);
+
+    const list = expectRun(cli(["keys", "list", "--json"]), 0, "keys list");
+    const exa = JSON.parse(list.stdout).keys.find((entry) => entry.provider === "exa");
+    if (exa.source !== "keychain" || exa.inKeychain !== true || leaked(list)) throw new Error(`keys list: ${list.stdout}`);
+
+    const status = expectRun(cli(["status", "--json"]), 0, "status");
+    const parsed = JSON.parse(status.stdout);
+    if (parsed.providers.find((p) => p.id === "exa").keySource !== "keychain" || leaked(status)) throw new Error(`status: ${status.stdout}`);
+
+    const removed = expectRun(cli(["keys", "remove", "exa"]), 0, "keys remove");
+    if (!removed.stdout.startsWith("Removed the Exa key from ")) throw new Error(`keys remove printed: ${removed.stdout}`);
+    const after = JSON.parse(expectRun(cli(["keys", "list", "--json"]), 0, "keys list after remove").stdout);
+    if (after.keys.find((entry) => entry.provider === "exa").source !== "none") throw new Error("the key was still listed after remove");
+    console.log(`keychain ok: set -> get -> list -> status -> remove in ${JSON.parse(list.stdout).keychain}`);
+  } finally {
+    cli(["keys", "remove", "exa"]);
+  }
+}
+
+/** No keychain here: `keys` says so, and the router still works with environment variables. */
+function noKeychain(cli) {
+  const set = expectRun(cli(["keys", "set", "exa", "--stdin"], { input: "exa-not-stored\n" }), 1, "keys set with no keychain");
+  if (!/keychain|native module/i.test(set.stderr) || !set.stderr.includes("Keep your keys safe")) throw new Error(`keys set said: ${set.stderr}`);
+  const list = expectRun(cli(["keys", "list"], { env: { EXA_API_KEY: "exa-from-env" } }), 0, "keys list with no keychain");
+  if (!list.stdout.includes("set, from the environment")) throw new Error(`keys list: ${list.stdout}`);
+  const status = expectRun(cli(["status", "--json"], { env: { EXA_API_KEY: "exa-from-env" } }), 0, "status with no keychain");
+  const parsed = JSON.parse(status.stdout);
+  if (parsed.providers.find((p) => p.id === "exa").keySource !== "env") throw new Error(`status: ${status.stdout}`);
+  if (!parsed.keychainNote) throw new Error("status should say why the keychain could not be read");
+  console.log(`no keychain ok: keys explains it; status works with env keys (${parsed.keychainNote.slice(0, 80)}...)`);
 }

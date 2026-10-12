@@ -10,11 +10,12 @@ permissions:
 
 jobs:
   check:
-    name: typecheck, test, build (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    name: typecheck, test, build (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: [22, 24]
     steps:
       - uses: actions/checkout@v4
@@ -28,12 +29,18 @@ jobs:
       - run: npm run build
 
   pack-smoke:
-    name: pack, install and import (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    name: pack, install and import (${{ matrix.os }}, Node ${{ matrix.node }}${{ matrix.mode == '--keychain' && ', real keychain' || '' }}${{ matrix.mode == '--no-keychain' && ', no keychain' || '' }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        include:
+          # Ubuntu runners have no Secret Service: the router must still work with environment variables.
+          - { os: ubuntu-latest, node: 22, mode: --no-keychain }
+          - { os: ubuntu-latest, node: 24, mode: --no-keychain }
+          # A real set -> get -> remove round trip, under the test service programscape-router-ci.
+          - { os: macos-latest, node: 22, mode: --keychain }
+          - { os: windows-latest, node: 22, mode: --keychain }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -43,5 +50,5 @@ jobs:
       - run: npm ci
       - run: npm run build
       # Packs the tarball, installs it into a fresh project, imports it as ESM, type-checks its .d.ts files
-      # as a consumer would, and runs the bin.
-      - run: npm run smoke:pack
+      # as a consumer would, runs the bin, and exercises the keychain (or its absence).
+      - run: npm run smoke:pack -- ${{ matrix.mode }}

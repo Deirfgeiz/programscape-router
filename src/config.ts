@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { configDir } from "./paths.js";
 import { z } from "zod";
 import { PROVIDER_IDS, type ProviderId } from "./types.js";
 
@@ -90,15 +90,15 @@ export interface ConfigLocation {
 }
 
 /**
- * Where a config file is looked for, in order: $PROGRAMSCAPE_ROUTER_CONFIG, ./programscape-router.json,
- * then $XDG_CONFIG_HOME/programscape-router/config.json (default ~/.config/...).
+ * Where a config file is looked for, in order: $PROGRAMSCAPE_ROUTER_CONFIG, ./programscape-router.json, then
+ * config.json in the config directory: $XDG_CONFIG_HOME/programscape-router when set, otherwise
+ * ~/.config/programscape-router on macOS and Linux and %APPDATA%\programscape-router on Windows.
  */
-export function configCandidates(env: NodeJS.ProcessEnv, cwd: string): string[] {
-  const xdg = env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.length > 0 ? env.XDG_CONFIG_HOME : join(homedir(), ".config");
+export function configCandidates(env: NodeJS.ProcessEnv, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
   return [
     ...(env.PROGRAMSCAPE_ROUTER_CONFIG ? [resolve(cwd, env.PROGRAMSCAPE_ROUTER_CONFIG)] : []),
     resolve(cwd, "programscape-router.json"),
-    join(xdg, "programscape-router", "config.json"),
+    join(configDir(env, platform), "config.json"),
   ];
 }
 

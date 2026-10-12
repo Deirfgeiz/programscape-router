@@ -1,6 +1,8 @@
 import { formatCheck, runCheck } from "./check.js";
+import { type KeysOptions, runKeys } from "./cli-keys.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { formatStatus } from "./format.js";
+import { type KeyringLoader, resolveKeys } from "./keys.js";
 import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
 import { ProgramscapeError } from "./programscape/guard.js";
 import { runMcpServer } from "./mcp.js";
@@ -18,6 +20,13 @@ export interface CliOptions extends RouterOptions {
   openBrowser?: ConnectOptions["openBrowser"];
   /** How long `connect` waits for the browser. */
   connectWaitMs?: number;
+  /** Loads the native keychain module. Tests replace it. */
+  keyringLoader?: KeyringLoader;
+  /** The terminal `keys set` reads from. Defaults to process.stdin. */
+  stdin?: KeysOptions["stdin"];
+  /** Where `keys set` shows its prompt. Defaults to process.stderr. */
+  promptOutput?: KeysOptions["promptOutput"];
+  platform?: NodeJS.Platform;
 }
 
 const USAGE = `programscape-router ${VERSION}
@@ -26,6 +35,9 @@ Routes web search and scrape calls across your own provider keys, spending the c
 Usage:
   programscape-router [mcp]                      Run the MCP server on stdio (default)
   programscape-router check [--json]             One live search, scrape and balance read per key set
+  programscape-router keys set <provider> [--stdin]  Store a key in the OS keychain, asked for at a hidden prompt
+  programscape-router keys list [--json]         Which keys are set and where from (never the keys)
+  programscape-router keys remove <provider>     Delete a stored key from the OS keychain
   programscape-router status [--json] [--refresh]
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
@@ -34,7 +46,9 @@ Usage:
   programscape-router disconnect                 Revoke the connection and delete the token file
   programscape-router --help | --version
 
-Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY.
+Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY,
+or, when a variable isn't set, from the OS keychain (see keys set). A variable wins over the keychain.
+Providers: exa, firecrawl, keenable, parallel, tavily.
 Find startup credits for these tools at https://programscape.com
 Nothing is sent to Programscape unless you run connect, and then only balance numbers.
 `;
@@ -90,6 +104,8 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
   }
 }
 
+const KEYED_COMMANDS = new Set(["mcp", "status", "search", "scrape", "sync"]);
+
 /** Runs one CLI command. Returns the exit code; "mcp" resolves once the server is connected. */
 export async function main(argv: string[], io: CliIo, options: CliOptions = {}): Promise<number> {
   const args = [...argv];
@@ -104,11 +120,29 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     return 0;
   }
 
+  const env = options.env ?? process.env;
+  const keychainOptions = {
+    env,
+    ...(options.keyringLoader ? { loader: options.keyringLoader } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  };
+
+  if (command === "keys") {
+    return runKeys(args, io, {
+      env,
+      ...(options.stdin ? { stdin: options.stdin } : {}),
+      ...(options.promptOutput ? { promptOutput: options.promptOutput } : {}),
+      ...(options.keyringLoader ? { keyringLoader: options.keyringLoader } : {}),
+      ...(options.platform ? { platform: options.platform } : {}),
+    });
+  }
+
   if (command === "check") {
     // Calls each adapter directly: no config, no routing, no ledger, no Programscape.
     const json = takeFlag(args, "--json");
     const report = await runCheck({
-      env: options.env ?? process.env,
+      env,
+      keys: options.keys ?? (await resolveKeys(keychainOptions)),
       ...(options.fetch ? { fetch: options.fetch } : {}),
       ...(options.now ? { now: options.now } : {}),
     });
@@ -124,15 +158,29 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     return 0;
   }
 
-  const { openBrowser: _openBrowser, connectWaitMs: _connectWaitMs, ...routerOptions } = options;
+  const {
+    openBrowser: _openBrowser,
+    connectWaitMs: _connectWaitMs,
+    keyringLoader: _keyringLoader,
+    stdin: _stdin,
+    promptOutput: _promptOutput,
+    platform: _platform,
+    ...routerOptions
+  } = options;
   let router: Router;
   try {
     if (command === "connect") {
       // Validate the config before starting a sign-in.
-      if (!options.config) loadConfig(options.env ?? process.env, options.cwd);
+      if (!options.config) loadConfig(env, options.cwd);
       return await runConnect(args, io, options);
     }
-    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions });
+    if (!KEYED_COMMANDS.has(command)) {
+      io.stderr(`Unknown command "${command}".\n\n${USAGE}`);
+      return 2;
+    }
+    // Keys are read once, at startup: each environment variable, or the OS keychain where one isn't set.
+    const keys = options.keys ?? (await resolveKeys(keychainOptions));
+    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions, keys });
   } catch (error) {
     if (error instanceof ConfigError) {
       io.stderr(`${error.message}\n`);

@@ -56,16 +56,21 @@ export interface ConnectResult {
   tokenPath: string;
 }
 
+/**
+ * The command that opens `url` in the system browser. The URL is passed as one argument, with no shell, so `&` and
+ * other characters in its query string reach the browser intact (on Windows, cmd's `start` would split at `&`).
+ */
+export function browserCommand(url: string, platform: NodeJS.Platform = process.platform): [string, string[]] {
+  if (platform === "darwin") return ["open", [url]];
+  if (platform === "win32") return ["rundll32", ["url.dll,FileProtocolHandler", url]];
+  return ["xdg-open", [url]];
+}
+
 /** The system browser, best effort. The URL is printed as well, so a failure here changes nothing. */
 export function systemBrowser(url: string): void {
-  const [command, args] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
-        : ["xdg-open", [url]];
+  const [command, args] = browserCommand(url);
   try {
-    const child = spawn(command as string, args as string[], { stdio: "ignore", detached: true });
+    const child = spawn(command, args, { stdio: "ignore", detached: true, windowsHide: true, shell: false });
     child.on("error", () => undefined);
     child.unref();
   } catch {

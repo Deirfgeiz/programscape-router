@@ -15,7 +15,7 @@ describe("cli", () => {
     const code = await main(["status"], streams, { env: {}, config: {}, ledgerPath: false });
     expect(code).toBe(0);
     const text = out.join("");
-    expect(text).toContain("exa: no key (set EXA_API_KEY)");
+    expect(text).toContain("exa: no key (set EXA_API_KEY, or run `programscape-router keys set exa`)");
     expect(text).toContain("Order for search (rule: credits ending first)");
     expect(text).toContain("(no provider available)");
     expect(text).toContain("Balances are never added together.");

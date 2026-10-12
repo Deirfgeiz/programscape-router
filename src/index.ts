@@ -16,6 +16,10 @@ export * from "./types.js";
 // The routing order shown in status (type-only: the order is computed by the router).
 export type { CapabilityOrder, OrderEntry, SkippedEntry, Tier } from "./order.js";
 
+// Keys: from the environment, or the OS keychain where a variable isn't set (pass the result as createRouter's `keys`).
+export { resolveKeys } from "./keys.js";
+export type { ResolvedKeys, KeySource } from "./keys.js";
+
 // Config.
 export { loadConfig, parseConfig, ConfigError } from "./config.js";
 export type { RouterConfig, CreditEntry, ConfigLocation } from "./config.js";

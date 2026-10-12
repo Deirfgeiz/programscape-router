@@ -5,6 +5,7 @@
  * The check writes nothing to the ledger and never talks to Programscape. Its report carries outcomes,
  * HTTP statuses, latencies, counts and lengths only: never a result title, URL, snippet or page content.
  */
+import { type KeySource, type ResolvedKeys, keysFromEnv } from "./keys.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter } from "./providers/index.js";
 import { type Capability, type Outcome, PROVIDER_IDS, type ProviderId } from "./types.js";
 import { VERSION } from "./version.js";
@@ -48,6 +49,8 @@ export interface CheckProvider {
   provider: ProviderId;
   name: string;
   envVar: string;
+  /** Where its key came from: the environment, the OS keychain, or none. Never the key itself. */
+  keySource: KeySource;
   /** Set when the provider was not called, and why (no key set). */
   skipped?: string;
   /** False when the provider publishes no balance endpoint, so no balance call was made. */
@@ -68,11 +71,15 @@ export interface CheckReport {
   failed: number;
   /** True when at least one call was made and every call passed. */
   ok: boolean;
+  /** Why the OS keychain could not be read, when a key was looked for there and it could not be. */
+  keychainNote?: string;
 }
 
 export interface CheckOptions {
   /** Where keys are read from. Defaults to process.env. Each key is only ever sent to its own provider. */
   env?: Record<string, string | undefined>;
+  /** Keys already resolved (for example by resolveKeys(), from the environment and the OS keychain). Defaults to `env` only. */
+  keys?: ResolvedKeys;
   /** Defaults to the global fetch. */
   fetch?: FetchLike;
   now?: () => Date;
@@ -170,9 +177,10 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
   const now = options.now ?? (() => new Date());
   const clock = options.clock ?? (() => performance.now());
 
+  const resolved = options.keys ?? keysFromEnv(env);
   const keys = new Map<ProviderId, string>();
   for (const id of PROVIDER_IDS) {
-    const key = env[ADAPTERS[id].envVar]?.trim();
+    const key = resolved.keys[id]?.trim();
     if (key) keys.set(id, key);
   }
   const redact = redactor([...keys.values()]);
@@ -182,9 +190,15 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
   const providers = await Promise.all(
     PROVIDER_IDS.map(async (id): Promise<CheckProvider> => {
       const adapter = ADAPTERS[id];
-      const base = { provider: id, name: adapter.name, envVar: adapter.envVar, balanceSupported: adapter.balance !== undefined };
       const key = keys.get(id);
-      if (!key) return { ...base, skipped: `${adapter.envVar} is not set`, calls: [] };
+      const base = {
+        provider: id,
+        name: adapter.name,
+        envVar: adapter.envVar,
+        keySource: key ? resolved.sources[id] : ("none" as const),
+        balanceSupported: adapter.balance !== undefined,
+      };
+      if (!key) return { ...base, skipped: `no key: set ${adapter.envVar} or run \`programscape-router keys set ${id}\``, calls: [] };
       return { ...base, calls: await checkProvider(adapter, key, fetchImpl, clock, redact) };
     }),
   );
@@ -202,6 +216,7 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
     passed,
     failed: calls.length - passed,
     ok: calls.length > 0 && passed === calls.length,
+    ...(resolved.keychainNote ? { keychainNote: resolved.keychainNote } : {}),
   };
 }
 
@@ -229,7 +244,7 @@ export function formatCheck(report: CheckReport): string {
       lines.push(`${provider.provider}: skipped (${provider.skipped})`, "");
       continue;
     }
-    lines.push(`${provider.provider} (${provider.envVar})`);
+    lines.push(`${provider.provider} (${provider.envVar}, from ${provider.keySource === "keychain" ? "the OS keychain" : "the environment"})`);
     for (const call of provider.calls) {
       const verdict = call.ok ? "ok" : `FAIL ${call.outcome}`;
       lines.push(`  ${call.capability.padEnd(9)}${verdict.padEnd(22)}${`${call.latencyMs} ms`.padStart(8)}  ${describe(call)}`);
@@ -237,6 +252,7 @@ export function formatCheck(report: CheckReport): string {
     if (!provider.balanceSupported) lines.push(`  ${"balance".padEnd(9)}${"-".padEnd(30)}  no public balance endpoint (add your credits in config)`);
     lines.push("");
   }
+  if (report.keychainNote) lines.push(`Keychain: ${report.keychainNote}`, "");
   const skipped = report.providers.filter((provider) => provider.skipped).length;
   if (report.attempted === 0) {
     lines.push("No provider key is set, so nothing was checked. Set at least one of the keys above and run check again.");
