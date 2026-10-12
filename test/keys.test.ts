@@ -153,6 +153,16 @@ describe("keys set", () => {
     expect(all()).not.toContain(SECRET);
   });
 
+  it("says when it replaces a stored key", async () => {
+    fakeKeyring.put(KEYCHAIN_SERVICE, "EXA_API_KEY", "exa-old");
+    const { streams, out, all } = io();
+    expect(await main(["keys", "set", "exa", "--stdin"], streams, { env: {}, stdin: Readable.from(["exa-new\n"]) as never, platform: "linux" })).toBe(0);
+    expect(out.join("")).toContain("Replaced the Exa key in the Secret Service keyring (service programscape-router, account EXA_API_KEY).");
+    expect(fakeKeyring.peek(KEYCHAIN_SERVICE, "EXA_API_KEY")).toBe("exa-new");
+    expect(all()).not.toContain("exa-old");
+    expect(all()).not.toContain("exa-new");
+  });
+
   it("refuses without a terminal or --stdin, and saves nothing", async () => {
     const { streams, err } = io();
     const code = await main(["keys", "set", "tavily"], streams, { env: {}, stdin: Readable.from([SECRET]) as never });

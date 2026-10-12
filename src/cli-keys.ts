@@ -4,7 +4,7 @@
  * A key is read at a hidden prompt (or from a pipe with --stdin), handed to the keychain, and never printed, logged
  * or written to a file by the router. `list` shows only whether each key is set and where it comes from.
  */
-import { type Keychain, KEY_ENV_VARS, KEYCHAIN_SERVICE, KeychainUnavailableError, type KeyringLoader, type KeySource, openKeychain } from "./keys.js";
+import { type Keychain, KEY_ENV_VARS, KeychainUnavailableError, type KeyringLoader, type KeySource, openKeychain } from "./keys.js";
 import { PromptCancelledError, type PromptInput, canPrompt, readFirstLine, readHidden } from "./prompt.js";
 import { ADAPTERS } from "./providers/index.js";
 import { PROVIDER_IDS, type ProviderId } from "./types.js";
@@ -115,7 +115,7 @@ async function set(args: string[], io: KeysIo, options: KeysOptions): Promise<nu
     }
     throw error;
   }
-  io.stdout(`${replacing ? "Replaced" : "Saved"} the ${adapter.name} key in ${keychain.label} (service ${KEYCHAIN_SERVICE}, account ${adapter.envVar}).\n`);
+  io.stdout(`${replacing ? "Replaced" : "Saved"} the ${adapter.name} key in ${keychain.label} (service ${keychain.service}, account ${adapter.envVar}).\n`);
   if (envSet(options.env, id)) {
     io.stdout(`Note: ${adapter.envVar} is also set in this environment, and the environment wins over the keychain.\n`);
   }
@@ -178,7 +178,7 @@ async function list(args: string[], io: KeysIo, options: KeysOptions): Promise<n
           : "not set";
     lines.push(`  ${entry.provider.padEnd(10)}${entry.envVar.padEnd(19)}${state}`);
   }
-  lines.push(note ? `Keychain: ${note}` : `Keychain: ${keychain?.label} (service ${KEYCHAIN_SERVICE}).`);
+  lines.push(note ? `Keychain: ${note}` : `Keychain: ${keychain?.label} (service ${keychain?.service}).`);
   io.stdout(`${lines.join("\n")}\n`);
   return 0;
 }

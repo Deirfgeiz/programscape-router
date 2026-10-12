@@ -40,6 +40,8 @@ export interface ResolvedKeys {
 export interface Keychain {
   /** Where keys are kept, in words ("the macOS Keychain"). */
   readonly label: string;
+  /** The keychain service the entries are under. */
+  readonly service: string;
   get(account: string): Promise<string | null>;
   set(account: string, secret: string): Promise<void>;
   /** True when something was deleted. */
@@ -127,6 +129,7 @@ export async function openKeychain(options: KeychainOptions = {}): Promise<Keych
   const label = storeLabel(platform);
   return {
     label,
+    service,
     async get(account) {
       try {
         return await entry(account).getPassword();
