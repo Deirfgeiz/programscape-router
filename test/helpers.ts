@@ -62,11 +62,17 @@ export const URLS = {
   firecrawlCredits: "https://api.firecrawl.dev/v2/team/credit-usage",
   keenableSearch: "https://api.keenable.ai/v1/search",
   keenableFetch: "https://api.keenable.ai/v1/fetch",
+  linkupSearch: "https://api.linkup.so/v1/search",
+  linkupFetch: "https://api.linkup.so/v1/fetch",
+  linkupBalance: "https://api.linkup.so/v1/credits/balance",
   parallelSearch: "https://api.parallel.ai/v1/search",
   parallelExtract: "https://api.parallel.ai/v1/extract",
   tavilySearch: "https://api.tavily.com/search",
   tavilyExtract: "https://api.tavily.com/extract",
   tavilyUsage: "https://api.tavily.com/usage",
+  youcomSearch: "https://ydc-index.io/v1/search",
+  youcomContents: "https://ydc-index.io/v1/contents",
+  youcomBalance: "https://api.you.com/v1/billing/account_balance",
 } as const;
 
 import { readFileSync } from "node:fs";

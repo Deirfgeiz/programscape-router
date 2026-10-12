@@ -46,9 +46,10 @@ Usage:
   programscape-router disconnect                 Revoke the connection and remove local tokens
   programscape-router --help | --version
 
-Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY,
-or, when a variable isn't set, from the OS keychain (see keys set). A variable wins over the keychain.
-Providers: exa, firecrawl, keenable, parallel, tavily.
+Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, LINKUP_API_KEY, PARALLEL_API_KEY,
+TAVILY_API_KEY and YDC_API_KEY, or, when a variable isn't set, from the OS keychain (see keys set).
+A variable wins over the keychain.
+Providers: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.
 Find startup credits for these tools at https://programscape.com
 Nothing goes to Programscape unless you run connect; then only sign-in, a read of your plan, and balance numbers.
 `;

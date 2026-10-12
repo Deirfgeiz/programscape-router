@@ -14,15 +14,20 @@ const KEYS = {
   EXA_API_KEY: "exa-SECRET-1111",
   FIRECRAWL_API_KEY: "fc-SECRET-2222",
   KEENABLE_API_KEY: "keen_SECRET-3333",
+  LINKUP_API_KEY: "lk-SECRET-6666",
   PARALLEL_API_KEY: "par-SECRET-4444",
   TAVILY_API_KEY: "tvly-SECRET-5555",
+  YDC_API_KEY: "ydc-SECRET-7777",
 };
-const HOSTS: Record<keyof typeof KEYS, string> = {
-  EXA_API_KEY: "api.exa.ai",
-  FIRECRAWL_API_KEY: "api.firecrawl.dev",
-  KEENABLE_API_KEY: "api.keenable.ai",
-  PARALLEL_API_KEY: "api.parallel.ai",
-  TAVILY_API_KEY: "api.tavily.com",
+/** Each provider's own API hosts. You.com uses two: ydc-index.io for search and contents, api.you.com for its balance. */
+const HOSTS: Record<keyof typeof KEYS, string[]> = {
+  EXA_API_KEY: ["api.exa.ai"],
+  FIRECRAWL_API_KEY: ["api.firecrawl.dev"],
+  KEENABLE_API_KEY: ["api.keenable.ai"],
+  LINKUP_API_KEY: ["api.linkup.so"],
+  PARALLEL_API_KEY: ["api.parallel.ai"],
+  TAVILY_API_KEY: ["api.tavily.com"],
+  YDC_API_KEY: ["ydc-index.io", "api.you.com"],
 };
 const QUERY = "confidential acquisition target zebra-otter-42";
 const PAGE = "https://private.example.com/board-minutes-zebra";
@@ -45,7 +50,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
   async function keyed(extra: Record<string, string> = {}) {
     const env = keyEnv(extra);
     const keys = await resolveKeys({ env });
-    expect(Object.values(keys.sources)).toEqual(Array(5).fill(source));
+    expect(Object.values(keys.sources)).toEqual(Array(7).fill(source));
     return { env, keys };
   }
 
@@ -58,21 +63,27 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
       [URLS.firecrawlCredits]: echo(500),
       [URLS.firecrawlSearch]: echo(401),
       [URLS.keenableSearch]: echo(429),
+      [URLS.linkupBalance]: echo(500),
+      [URLS.linkupSearch]: echo(429),
       [URLS.parallelSearch]: echo(503),
       [URLS.tavilyUsage]: echo(500),
-      [URLS.tavilySearch]: ok(fixture("tavily-search")),
+      [URLS.tavilySearch]: echo(503),
+      [URLS.youcomBalance]: echo(500),
+      [URLS.youcomSearch]: ok(fixture("youcom-search")),
       [URLS.exaContents]: echo(402),
       [URLS.firecrawlScrape]: echo(401),
       [URLS.keenableFetch]: echo(402),
+      [URLS.linkupFetch]: echo(402),
       [URLS.parallelExtract]: echo(402),
-      [URLS.tavilyExtract]: ok({ results: [{ url: PAGE, raw_content: "secret board minutes zebra" }] }),
+      [URLS.tavilyExtract]: echo(402),
+      [URLS.youcomContents]: ok([{ url: PAGE, title: "Board minutes zebra", markdown: "secret board minutes zebra", html: null }]),
     });
     const router = createRouter({ ...(await keyed()), config: {}, fetch, ledgerPath, log: (m) => logs.push(m) });
 
     const search = await router.search({ query: QUERY });
-    expect(search.routing.provider).toBe("tavily");
+    expect(search.routing.provider).toBe("youcom");
     const scrape = await router.scrape({ url: PAGE });
-    expect(scrape.routing.provider).toBe("tavily");
+    expect(scrape.routing.provider).toBe("youcom");
     await router.flush();
 
     // Messages handed back to the caller have keys redacted.
@@ -95,8 +106,11 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
       exa: { search: { exhausted: 1 } },
       firecrawl: { search: { unauthorized: 1 } },
       keenable: { search: { rate_limited: 1 }, scrape: { exhausted: 1 } },
+      // Linkup's 429 without a documented code is a rate limit; its 402 means the key wasn't taken.
+      linkup: { search: { rate_limited: 1 }, scrape: { unauthorized: 1 } },
       parallel: { search: { server_error: 1 }, scrape: { exhausted: 1 } },
-      tavily: { search: { ok: 1 }, scrape: { ok: 1 } },
+      tavily: { search: { server_error: 1 }, scrape: { exhausted: 1 } },
+      youcom: { search: { ok: 1 }, scrape: { ok: 1 } },
     });
     // The ledger is exactly its sanitized self: nothing but counts.
     expect(ledger).toEqual(sanitizeLedger(ledger));
@@ -108,22 +122,28 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
       [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
       [URLS.firecrawlSearch]: status(503),
       [URLS.keenableSearch]: status(503),
+      [URLS.linkupBalance]: ok(fixture("linkup-balance")),
+      [URLS.linkupSearch]: status(503),
       [URLS.parallelSearch]: status(503),
       [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
       [URLS.tavilySearch]: status(503),
+      [URLS.youcomBalance]: ok(fixture("youcom-balance")),
+      [URLS.youcomSearch]: status(503),
     });
     const router = createRouter({ ...(await keyed()), config: {}, fetch, ledgerPath: false, log: () => {} });
     await router.search({ query: QUERY }).catch(() => undefined);
     await router.status({ refresh: true });
 
-    expect(calls.length).toBeGreaterThan(5);
+    expect(calls.length).toBeGreaterThan(7);
+    // Every provider's every host was called, so every key was checked against every other host.
+    expect(new Set(calls.map((call) => new URL(call.url).host))).toEqual(new Set(Object.values(HOSTS).flat()));
     for (const call of calls) {
       const host = new URL(call.url).host;
-      expect(Object.values(HOSTS)).toContain(host);
+      expect(Object.values(HOSTS).flat()).toContain(host);
       expect(host).not.toContain("programscape");
       const sent = JSON.stringify(call);
       for (const [name, key] of Object.entries(KEYS)) {
-        if (HOSTS[name as keyof typeof KEYS] === host) expect(sent).toContain(key);
+        if (HOSTS[name as keyof typeof KEYS].includes(host)) expect(sent).toContain(key);
         else expect(sent).not.toContain(key);
       }
     }
@@ -149,7 +169,9 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     const fake = fakeProgramscape({
       kept: [
         { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
+        { id: "linkup.free-credits", provider: "linkup", approved: true },
         { id: "tavily.startup-credits", provider: "tavily", approved: true },
+        { id: "youcom.free-credits", provider: "youcom", approved: true },
       ],
     });
     const providers = mockFetch({
@@ -158,13 +180,19 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
       [URLS.firecrawlSearch]: echo(503),
       [URLS.firecrawlScrape]: echo(503),
       [URLS.keenableSearch]: echo(503),
+      [URLS.linkupBalance]: ok({ balance: 20 }),
+      [URLS.linkupSearch]: echo(503),
       [URLS.parallelSearch]: echo(503),
       [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
       [URLS.tavilySearch]: ok(fixture("tavily-search")),
+      [URLS.youcomBalance]: ok({ data: { type: "account", id: "x", attributes: { balance: 10000 } } }),
+      [URLS.youcomSearch]: echo(503),
       [URLS.exaContents]: echo(503),
       [URLS.keenableFetch]: echo(503),
+      [URLS.linkupFetch]: echo(503),
       [URLS.parallelExtract]: echo(503),
       [URLS.tavilyExtract]: ok({ results: [{ url: PAGE, raw_content: "secret board minutes zebra" }] }),
+      [URLS.youcomContents]: echo(503),
     });
     const fetch = combine(fake.fetch, providers.fetch);
     await connect({ env, fetch, now: () => new Date(), print: () => {}, openBrowser: fake.browser });
@@ -179,7 +207,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     await router.scrape({ url: PAGE });
     await router.flush(); // the automatic sync after the balance reads
     const manual = await router.syncBalances();
-    expect(manual.filter((result) => result.outcome === "synced").map((result) => result.provider)).toEqual(["firecrawl", "tavily"]);
+    expect(manual.filter((result) => result.outcome === "synced").map((result) => result.provider)).toEqual(["firecrawl", "linkup", "tavily", "youcom"]);
 
     const toProgramscape = fake.seen;
     expect(toProgramscape.length).toBeGreaterThan(0);

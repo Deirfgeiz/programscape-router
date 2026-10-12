@@ -166,6 +166,115 @@ describe("Keenable", () => {
   });
 });
 
+describe("Linkup", () => {
+  it("maps search, keeping text results and dropping images", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.linkupSearch]: ok(fixture("linkup-search")) });
+    const results = await ADAPTERS.linkup.search!({ query: "What is Microsoft's 2024 revenue?", maxResults: 5 }, ctx(fetch));
+    expect(calls[0]).toMatchObject({
+      url: "https://api.linkup.so/v1/search",
+      method: "POST",
+      headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+      body: { q: "What is Microsoft's 2024 revenue?", depth: "fast", outputType: "searchResults", maxResults: 5 },
+      redirect: "manual",
+    });
+    expect(results).toEqual([
+      {
+        title: "Microsoft 2024 Annual Report",
+        url: "https://www.microsoft.com/investor/reports/ar24/index.html",
+        snippet: "Highlights from fiscal year 2024 compared with fiscal year 2023 included: Microsoft Cloud revenue increased 23% to $137.4 billion.",
+      },
+      { title: "https://example.com/no-title", url: "https://example.com/no-title" },
+    ]);
+  });
+
+  it("clamps maxResults, and reads SEARCH_QUERY_NO_RESULT as an empty list", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.linkupSearch]: ok({ results: [] }) });
+    await ADAPTERS.linkup.search!({ query: "q", maxResults: 500 }, ctx(fetch));
+    expect((calls[0]?.body as { maxResults: number }).maxResults).toBe(100);
+    const none = mockFetch({
+      [URLS.linkupSearch]: status(400, { statusCode: 400, error: { code: "SEARCH_QUERY_NO_RESULT", message: "Search query yields no result", details: [] } }),
+    });
+    expect(await ADAPTERS.linkup.search!({ query: "q" }, ctx(none.fetch))).toEqual([]);
+    const shape = mockFetch({ [URLS.linkupSearch]: ok({ answer: "x" }) });
+    expect((await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(shape.fetch)))).outcome).toBe("invalid_response");
+  });
+
+  it("maps fetch, with the requested URL and no title", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.linkupFetch]: ok(fixture("linkup-fetch")) });
+    const result = await ADAPTERS.linkup.scrape!({ url: "https://docs.linkup.so" }, ctx(fetch));
+    expect(calls[0]).toMatchObject({ url: "https://api.linkup.so/v1/fetch", method: "POST", body: { url: "https://docs.linkup.so" } });
+    expect(result).toEqual({ url: "https://docs.linkup.so", markdown: "Get started for free, no credit card required..." });
+    const empty = mockFetch({ [URLS.linkupFetch]: ok({ favicon: "https://favicons.linkup.so?domain=e.com" }) });
+    expect((await failure(ADAPTERS.linkup.scrape!({ url: "https://e.com" }, ctx(empty.fetch)))).outcome).toBe("fetch_failed");
+  });
+
+  it("reads 429 by its code: spent credits or budget are exhausted, too many requests is rate limited", async () => {
+    const credits = mockFetch({ [URLS.linkupSearch]: status(429, fixture("linkup-error-429")) });
+    const spent = await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(credits.fetch)));
+    expect(spent).toMatchObject({ outcome: "exhausted", status: 429, code: "INSUFFICIENT_FUNDS_CREDITS" });
+    expect(spent.message).toBe("You do not have enough credits to perform this request.");
+    const budget = mockFetch({
+      [URLS.linkupFetch]: status(429, { statusCode: 429, error: { code: "EXCEED_BUDGET_LIMIT", message: "The API key has reached its configured budget limit.", details: [] } }),
+    });
+    expect((await failure(ADAPTERS.linkup.scrape!({ url: "https://e.com" }, ctx(budget.fetch)))).outcome).toBe("exhausted");
+    const busy = mockFetch({ [URLS.linkupSearch]: status(429, { statusCode: 429, error: { code: "TOO_MANY_REQUESTS", message: "Too many requests", details: [] } }) });
+    expect(await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(busy.fetch)))).toMatchObject({ outcome: "rate_limited", code: "TOO_MANY_REQUESTS" });
+    // A 429 without a code is read as a rate limit, never as spent credits.
+    const bare = mockFetch({ [URLS.linkupSearch]: status(429, {}) });
+    expect((await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(bare.fetch)))).outcome).toBe("rate_limited");
+  });
+
+  it("reads the x402 challenge (402) as an unaccepted key, not spent credits; 401 and 403 too", async () => {
+    const challenge = mockFetch({ [URLS.linkupSearch]: () => new Response("", { status: 402, headers: { "payment-required": "x402" } }) });
+    expect(await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(challenge.fetch)))).toMatchObject({ outcome: "unauthorized", status: 402 });
+    const balance = mockFetch({ [URLS.linkupBalance]: status(402, {}) });
+    expect((await failure(ADAPTERS.linkup.balance!(ctx(balance.fetch)))).outcome).toBe("unauthorized");
+    const key = mockFetch({ [URLS.linkupSearch]: status(401, { statusCode: 401, error: { code: "UNAUTHORIZED", message: "Invalid API key", details: [] } }) });
+    expect((await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(key.fetch)))).outcome).toBe("unauthorized");
+    const ip = mockFetch({ [URLS.linkupSearch]: status(403, { statusCode: 403, error: { code: "IP_NOT_WHITELISTED", message: "IP not allowed", details: [] } }) });
+    expect((await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(ip.fetch)))).outcome).toBe("unauthorized");
+  });
+
+  it("reads every documented FETCH_* 400 as a failed fetch, so the router fails over; other 400s stay bad requests", async () => {
+    const codes = [
+      "FETCH_ERROR",
+      "FETCH_RESPONSE_TOO_LARGE",
+      "FETCH_TARGET_NOT_FOUND",
+      "FETCH_TARGET_UNREACHABLE",
+      "FETCH_UNSUPPORTED_CONTENT_TYPE",
+      "FETCH_URL_IS_FILE",
+    ];
+    for (const code of codes) {
+      const { fetch } = mockFetch({ [URLS.linkupFetch]: status(400, { statusCode: 400, error: { code, message: "Could not fetch", details: [] } }) });
+      expect(await failure(ADAPTERS.linkup.scrape!({ url: "https://e.com" }, ctx(fetch)))).toMatchObject({ outcome: "fetch_failed", status: 400, code });
+      expect(ADAPTERS.linkup.errorCodes).toContain(code);
+    }
+    const invalidBody = mockFetch({
+      [URLS.linkupSearch]: status(400, { statusCode: 400, error: { code: "VALIDATION_ERROR", message: "Validation failed", details: [{ field: "outputType", message: "bad" }] } }),
+    });
+    expect(await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(invalidBody.fetch)))).toMatchObject({
+      outcome: "bad_request",
+      code: "VALIDATION_ERROR",
+      message: "Validation failed",
+    });
+    const deadline = mockFetch({ [URLS.linkupSearch]: status(504, { statusCode: 504, error: { code: "REQUEST_DEADLINE_EXCEEDED", message: "Deadline", details: [] } }) });
+    expect((await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(deadline.fetch)))).outcome).toBe("timeout");
+    const down = mockFetch({ [URLS.linkupSearch]: status(500) });
+    expect((await failure(ADAPTERS.linkup.search!({ query: "q" }, ctx(down.fetch)))).outcome).toBe("server_error");
+  });
+
+  it("reads the balance as one USD amount with no total or end date", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.linkupBalance]: ok(fixture("linkup-balance")) });
+    const reading = await ADAPTERS.linkup.balance!(ctx(fetch));
+    expect(calls[0]).toMatchObject({ url: "https://api.linkup.so/v1/credits/balance", method: "GET", headers: { authorization: "Bearer test-key" } });
+    expect(reading.balances).toEqual([
+      { label: "Linkup balance", kind: "credits", unit: "usd", remaining: 123.456, source: "provider", asOf: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) },
+    ]);
+    const shape = mockFetch({ [URLS.linkupBalance]: ok({ credits: 5 }) });
+    expect((await failure(ADAPTERS.linkup.balance!(ctx(shape.fetch)))).outcome).toBe("invalid_response");
+  });
+});
+
 describe("Parallel", () => {
   it("maps search, with the result cap in advanced_settings", async () => {
     const { fetch, calls } = mockFetch({ [URLS.parallelSearch]: ok(fixture("parallel-search")) });
@@ -254,6 +363,163 @@ describe("Tavily", () => {
       ["Tavily limit on this key", "key-limit", 850, 1000],
     ]);
     expect(balances.every((b) => b.endsOn === undefined)).toBe(true);
+  });
+});
+
+describe("You.com", () => {
+  it("maps search: web results, then news results not already listed, with news dates read as UTC", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.youcomSearch]: ok(fixture("youcom-search")) });
+    const results = await ADAPTERS.youcom.search!({ query: "global birth rate trends", maxResults: 5 }, ctx(fetch, "ydc-abc"));
+    expect(calls[0]).toMatchObject({
+      url: "https://ydc-index.io/v1/search",
+      method: "POST",
+      headers: { "x-api-key": "ydc-abc", "content-type": "application/json" },
+      body: { query: "global birth rate trends", count: 5 },
+      redirect: "manual",
+    });
+    expect(results).toEqual([
+      {
+        title: "Geopolitics News | Latest News on Geopolitics - Times of India",
+        url: "https://timesofindia.indiatimes.com/topic/geopolitics/news",
+        snippet: "European nations, particularly Denmark and Norway, ... … A second snippet.",
+      },
+      { title: "Description only", url: "https://example.com/description-only", snippet: "Only a description." },
+      {
+        title: "India entering golden era of defence innovation: Rajnath",
+        url: "https://theprint.in/defence/india-golden-era-defence-innovation/",
+        snippet: "Defence minister speaks at an innovation summit.",
+        publishedAt: "2025-11-25T12:31:29.000Z",
+      },
+    ]);
+  });
+
+  it("clamps count to You.com's maximum and accepts a results object with no hits", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.youcomSearch]: ok({ results: {}, metadata: {} }) });
+    expect(await ADAPTERS.youcom.search!({ query: "q", maxResults: 500 }, ctx(fetch))).toEqual([]);
+    expect((calls[0]?.body as { count: number }).count).toBe(100);
+    const shape = mockFetch({ [URLS.youcomSearch]: ok({ results: [] }) });
+    expect((await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(shape.fetch)))).outcome).toBe("invalid_response");
+  });
+
+  it("maps contents, which answers with a list", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.youcomContents]: ok(fixture("youcom-contents")) });
+    const result = await ADAPTERS.youcom.scrape!({ url: "https://competitor.com/pricing" }, ctx(fetch));
+    expect(calls[0]).toMatchObject({
+      url: "https://ydc-index.io/v1/contents",
+      method: "POST",
+      headers: { "x-api-key": "test-key" },
+      body: { urls: ["https://competitor.com/pricing"], formats: ["markdown"] },
+    });
+    expect(result).toEqual({ url: "https://competitor.com/pricing", title: "Pricing — Competitor Inc.", markdown: "# Pricing\n\n## Starter Plan\n$49/month..." });
+  });
+
+  it("reads null markdown or an empty list as a failed fetch, and an object as an unreadable answer", async () => {
+    const empty = mockFetch({ [URLS.youcomContents]: ok([{ url: "https://e.com", title: "t", markdown: null, html: null }]) });
+    expect((await failure(ADAPTERS.youcom.scrape!({ url: "https://e.com" }, ctx(empty.fetch)))).outcome).toBe("fetch_failed");
+    const none = mockFetch({ [URLS.youcomContents]: ok([]) });
+    expect((await failure(ADAPTERS.youcom.scrape!({ url: "https://e.com" }, ctx(none.fetch)))).outcome).toBe("fetch_failed");
+    const shape = mockFetch({ [URLS.youcomContents]: ok({ markdown: "x" }) });
+    expect((await failure(ADAPTERS.youcom.scrape!({ url: "https://e.com" }, ctx(shape.fetch)))).outcome).toBe("invalid_response");
+  });
+
+  it("reads 402 as exhausted, 429 as rate limited, 401 as unauthorized, 422 as a bad request, 500 as a server error", async () => {
+    const spent = mockFetch({ [URLS.youcomSearch]: status(402, { detail: "Insufficient credits" }) });
+    expect(await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(spent.fetch)))).toMatchObject({
+      outcome: "exhausted",
+      status: 402,
+      message: "Insufficient credits",
+    });
+    // The search reference's 402 shape: `error` is a code You.com doesn't list, so the message comes from `message`.
+    const upgrade = mockFetch({
+      [URLS.youcomContents]: status(402, { error: "payment_required", message: "The account cannot make paid API requests.", upgrade_url: "https://you.com/platform" }),
+    });
+    const upgradeError = await failure(ADAPTERS.youcom.scrape!({ url: "https://e.com" }, ctx(upgrade.fetch)));
+    expect(upgradeError).toMatchObject({ outcome: "exhausted", message: "The account cannot make paid API requests." });
+    expect(upgradeError.code).toBeUndefined();
+    const busy = mockFetch({ [URLS.youcomSearch]: status(429, { detail: "Too many requests" }) });
+    expect((await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(busy.fetch)))).outcome).toBe("rate_limited");
+    const key = mockFetch({ [URLS.youcomSearch]: status(401, { detail: "Invalid or expired API key" }) });
+    expect(await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(key.fetch)))).toMatchObject({ outcome: "unauthorized", message: "Invalid or expired API key" });
+    const params = mockFetch({ [URLS.youcomSearch]: status(422, { error: "invalid request parameter(s)" }) });
+    expect((await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(params.fetch)))).outcome).toBe("bad_request");
+    const auth = mockFetch({ [URLS.youcomSearch]: status(500, { detail: "Internal authentication error" }) });
+    expect((await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(auth.fetch)))).outcome).toBe("server_error");
+  });
+
+  it("reads a 403 for a missing scope as a provider error, so the key keeps working elsewhere; any other 403 as unauthorized", async () => {
+    const scope = mockFetch({ [URLS.youcomContents]: status(403, { detail: "Missing required scopes" }) });
+    expect(await failure(ADAPTERS.youcom.scrape!({ url: "https://e.com" }, ctx(scope.fetch)))).toMatchObject({ outcome: "provider_error", status: 403 });
+    const billing = mockFetch({ [URLS.youcomBalance]: status(403, { detail: "Missing required scopes" }) });
+    expect((await failure(ADAPTERS.youcom.balance!(ctx(billing.fetch)))).outcome).toBe("provider_error");
+    const host = mockFetch({ [URLS.youcomBalance]: status(403, { message: "Missing Authentication Token" }) });
+    expect((await failure(ADAPTERS.youcom.balance!(ctx(host.fetch)))).outcome).toBe("provider_error");
+    const other = mockFetch({ [URLS.youcomSearch]: status(403, { detail: "Forbidden" }) });
+    expect((await failure(ADAPTERS.youcom.search!({ query: "q" }, ctx(other.fetch)))).outcome).toBe("unauthorized");
+  });
+
+  it("reads the account balance from api.you.com, converting cents to dollars without rounding", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.youcomBalance]: ok(fixture("youcom-balance")) });
+    const reading = await ADAPTERS.youcom.balance!(ctx(fetch, "ydc-abc"));
+    expect(calls[0]).toMatchObject({ url: "https://api.you.com/v1/billing/account_balance", method: "GET", headers: { "x-api-key": "ydc-abc" }, redirect: "manual" });
+    expect(reading.balances).toEqual([
+      { label: "You.com account balance", kind: "credits", unit: "usd", remaining: 7189.245, source: "provider", asOf: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) },
+    ]);
+    const shape = mockFetch({ [URLS.youcomBalance]: ok({ data: { type: "account", id: "x", attributes: {} } }) });
+    expect((await failure(ADAPTERS.youcom.balance!(ctx(shape.fetch)))).outcome).toBe("invalid_response");
+  });
+});
+
+describe("Linkup and You.com keep the key out of what they return", () => {
+  const KEY = "SECRET-KEY-zz9-plural-z-alpha";
+  const cases = [
+    { adapter: ADAPTERS.linkup, search: URLS.linkupSearch, scrape: URLS.linkupFetch, balance: URLS.linkupBalance },
+    { adapter: ADAPTERS.youcom, search: URLS.youcomSearch, scrape: URLS.youcomContents, balance: URLS.youcomBalance },
+  ];
+
+  it("in every error outcome's message and code, and in every success", async () => {
+    const body = { statusCode: 0, error: { code: "INSUFFICIENT_FUNDS_CREDITS", message: "provider text" }, detail: "Missing required scopes" };
+    for (const { adapter, search, scrape, balance } of cases) {
+      for (const code of [400, 401, 402, 403, 404, 422, 429, 500, 504]) {
+        const { fetch } = mockFetch({ [search]: status(code, body), [scrape]: status(code, body), [balance]: status(code, body) });
+        for (const error of [
+          await failure(adapter.search!({ query: "q" }, ctx(fetch, KEY))),
+          await failure(adapter.scrape!({ url: "https://e.com" }, ctx(fetch, KEY))),
+          await failure(adapter.balance!(ctx(fetch, KEY))),
+        ]) {
+          expect(JSON.stringify({ message: error.message, code: error.code, outcome: error.outcome })).not.toContain(KEY);
+        }
+      }
+    }
+    const linkupOk = mockFetch({
+      [URLS.linkupSearch]: ok(fixture("linkup-search")),
+      [URLS.linkupFetch]: ok(fixture("linkup-fetch")),
+      [URLS.linkupBalance]: ok(fixture("linkup-balance")),
+    });
+    const youcomOk = mockFetch({
+      [URLS.youcomSearch]: ok(fixture("youcom-search")),
+      [URLS.youcomContents]: ok(fixture("youcom-contents")),
+      [URLS.youcomBalance]: ok(fixture("youcom-balance")),
+    });
+    for (const [adapter, fetch] of [
+      [ADAPTERS.linkup, linkupOk.fetch],
+      [ADAPTERS.youcom, youcomOk.fetch],
+    ] as const) {
+      const outputs = [
+        await adapter.search!({ query: "q" }, ctx(fetch, KEY)),
+        await adapter.scrape!({ url: "https://e.com" }, ctx(fetch, KEY)),
+        await adapter.balance!(ctx(fetch, KEY)),
+      ];
+      expect(JSON.stringify(outputs)).not.toContain(KEY);
+    }
+    // The key went out only in the provider's own auth header, to the provider's own hosts.
+    for (const call of [...linkupOk.calls, ...youcomOk.calls]) {
+      const host = new URL(call.url).host;
+      expect(["api.linkup.so", "ydc-index.io", "api.you.com"]).toContain(host);
+      expect(JSON.stringify(call.body ?? "")).not.toContain(KEY);
+      expect(call.url).not.toContain(KEY);
+      const carrying = Object.entries(call.headers).filter(([, value]) => value.includes(KEY)).map(([name]) => name);
+      expect(carrying).toEqual([host === "api.linkup.so" ? "authorization" : "x-api-key"]);
+    }
   });
 });
 

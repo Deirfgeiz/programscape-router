@@ -36,7 +36,7 @@ describe("config validation", () => {
     const text = message({ order: { search: ["bing"] } });
     expect(text).toContain("test.json is not valid");
     expect(text).toContain("order.search.0");
-    expect(text).toContain('"bing" is not a provider this router knows. Use one of: exa, firecrawl, keenable, parallel, tavily.');
+    expect(text).toContain('"bing" is not a provider this router knows. Use one of: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.');
   });
 
   it("rejects a provider listed twice", () => {

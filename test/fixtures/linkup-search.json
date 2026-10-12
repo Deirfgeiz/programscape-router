@@ -1,0 +1,23 @@
+{
+  "results": [
+    {
+      "type": "text",
+      "name": "Microsoft 2024 Annual Report",
+      "url": "https://www.microsoft.com/investor/reports/ar24/index.html",
+      "content": "Highlights from fiscal year 2024 compared with fiscal year 2023 included: Microsoft Cloud revenue increased 23% to $137.4 billion.",
+      "favicon": "https://www.microsoft.com/favicon.ico"
+    },
+    {
+      "type": "image",
+      "name": "Microsoft 2024 Annual Report",
+      "url": "https://www.microsoft.com/investor/reports/ar24/images/cover.jpg"
+    },
+    {
+      "type": "text",
+      "name": "",
+      "url": "https://example.com/no-title",
+      "content": "",
+      "favicon": ""
+    }
+  ]
+}
