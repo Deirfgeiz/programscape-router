@@ -58,9 +58,12 @@ export const configSchema = z.strictObject({
   timeoutMs: z.number().int().min(1000).max(300_000).optional(),
 });
 
+/** The config file's shape. Every field is optional; see the README's Config section. */
 export type RouterConfig = z.infer<typeof configSchema>;
+/** One entry in providers.<id>.credits: credits you hold, as you know them. */
 export type CreditEntry = z.infer<typeof credit>;
 
+/** A config file that is missing (when named), not JSON, or not valid. The message says which field and why. */
 export class ConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -79,7 +82,9 @@ export function parseConfig(input: unknown, source = "config"): RouterConfig {
   throw new ConfigError(`${source} is not valid:\n${lines.join("\n")}`);
 }
 
+/** Where loadConfig found a config, and what it holds. */
 export interface ConfigLocation {
+  /** The file used, or undefined when none was found (defaults apply). */
   path: string | undefined;
   config: RouterConfig;
 }
@@ -97,6 +102,7 @@ export function configCandidates(env: NodeJS.ProcessEnv, cwd: string): string[] 
   ];
 }
 
+/** Finds and validates the config file (see configCandidates for the lookup order). Throws ConfigError. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): ConfigLocation {
   const explicit = env.PROGRAMSCAPE_ROUTER_CONFIG;
   if (explicit && !existsSync(resolve(cwd, explicit))) {

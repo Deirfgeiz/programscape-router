@@ -1,6 +1,6 @@
 {
   "name": "programscape-router",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Route an AI agent's web search and scrape calls across providers with your own API keys, spending the credits that end first. Local MCP server and library.",
   "license": "MIT",
   "author": "Forgotten Things Labs LLC",
@@ -25,7 +25,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "programscape-router": "dist/cli.js"
@@ -33,15 +34,18 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "smoke:pack": "node scripts/pack-smoke.mjs",
     "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },

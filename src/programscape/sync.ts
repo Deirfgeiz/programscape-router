@@ -21,6 +21,7 @@ export const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const AUTO_SYNC_TIMEOUT_MS = 30_000;
 
+/** "manual": only on `programscape-router sync`. "auto": also after a balance read, at most every 6 hours per provider. */
 export type SyncMode = "manual" | "auto";
 
 export interface BalanceReport {
@@ -31,6 +32,7 @@ export interface BalanceReport {
   source: "router";
 }
 
+/** One provider's result from router.syncBalances(). */
 export interface SyncResult {
   provider: ProviderId;
   outcome: ProviderSyncRecord["outcome"] | "skipped";
@@ -45,6 +47,7 @@ export interface ProviderReading {
   note?: string;
 }
 
+/** The balance sync's state, read from local files only. Part of router.status(). */
 export interface ProgramscapeSyncStatus {
   sync: "on" | "off";
   mode: SyncMode;

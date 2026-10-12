@@ -10,8 +10,10 @@ permissions:
 
 jobs:
   check:
+    name: typecheck, test, build (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         node: [20, 22, 24]
     steps:
@@ -24,3 +26,22 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  pack-smoke:
+    name: pack, install and import (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Packs the tarball, installs it into a fresh project, imports it as ESM, type-checks its .d.ts files
+      # as a consumer would, and runs the bin.
+      - run: npm run smoke:pack

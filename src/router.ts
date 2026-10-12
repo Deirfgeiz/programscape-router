@@ -20,6 +20,7 @@ import {
   type SearchResult,
 } from "./types.js";
 
+/** Options for createRouter. All are optional; the defaults read keys from process.env and config from disk. */
 export interface RouterOptions {
   /** Where keys are read from. Defaults to process.env. Keys are only ever sent to their own provider. */
   env?: NodeJS.ProcessEnv;
@@ -33,24 +34,33 @@ export interface RouterOptions {
   ledgerPath?: string | false;
   /** Where notices go (never keys, queries or content). Defaults to stderr. */
   log?: (message: string) => void;
+  /** The clock used for end dates and the ledger day. Defaults to the system clock. */
   now?: () => Date;
 }
 
+/** One provider in router.status(). */
 export interface ProviderStatus {
   id: ProviderId;
   name: string;
   enabled: boolean;
+  /** The environment variable its key is read from. */
   keyEnvVar: string;
   capabilities: Capability[];
+  /** From config: whether you pay as you go with this provider. */
   paid?: boolean;
+  /** Why it was switched off for this session (for example, the key was refused). */
   disabled?: string;
+  /** Set when it reported its credits spent this session; skipped until `until`, or for the session. */
   exhausted?: { since: string; until?: string; reason: string };
   /** Each balance on its own, in its own unit. Never added together. */
   balances: Balance[];
+  /** Why no live balance is shown, when none is. */
   balanceNote?: string;
+  /** The official API documentation its adapter was built from. */
   docs: string[];
 }
 
+/** What router.status() returns, and what `programscape-router status --json` prints. */
 export interface RouterStatus {
   asOf: string;
   configPath: string | null;
@@ -61,8 +71,11 @@ export interface RouterStatus {
   programscape: ProgramscapeSyncStatus;
 }
 
+/** A router made by createRouter. */
 export interface Router {
+  /** Searches through the first provider in the order that answers, failing over as the README describes. Throws RouterError. */
   search(request: SearchRequest): Promise<SearchResponse>;
+  /** Fetches one page as markdown, the same way. Throws RouterError. */
   scrape(request: ScrapeRequest): Promise<ScrapeResponse>;
   /** Enabled providers, the order per capability with reasons, and balances with their read time. */
   status(options?: { refresh?: boolean }): Promise<RouterStatus>;
@@ -73,11 +86,19 @@ export interface Router {
   syncBalances(): Promise<SyncResult[]>;
   /** Resolves when pending ledger writes and background syncs have finished. */
   flush(): Promise<void>;
+  /** The config file in use, or null when none was found (or a config object was passed). */
   readonly configPath: string | null;
 }
 
+/**
+ * invalid_request: the request itself was malformed (empty query, bad URL); no provider was called.
+ * no_provider: no provider is available for the capability (no key, switched off, spent, or not in your order).
+ * bad_request: a provider rejected the request (400/422); no other provider was tried.
+ * all_failed: every provider in the order was tried and failed.
+ */
 export type RouterErrorCode = "invalid_request" | "no_provider" | "bad_request" | "all_failed";
 
+/** Thrown by search and scrape. `routing` lists every provider tried and every provider skipped. */
 export class RouterError extends Error {
   readonly code: RouterErrorCode;
   readonly routing: { rule: OrderRule; tried: Attempt[]; skipped: SkippedEntry[] } | undefined;
@@ -104,6 +125,7 @@ interface BalanceCache {
   note?: string;
 }
 
+/** Creates a router. Reads keys from the environment and the config file unless options say otherwise. Throws ConfigError on an invalid config. */
 export function createRouter(options: RouterOptions = {}): Router {
   const env = options.env ?? process.env;
   const now = options.now ?? (() => new Date());

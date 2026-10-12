@@ -1,5 +1,6 @@
 import type { Balance, Outcome, ProviderId, ScrapeRequest, ScrapeResult, SearchRequest, SearchResult } from "../types.js";
 
+/** A fetch implementation. The router never asks it to follow redirects. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface CallContext {

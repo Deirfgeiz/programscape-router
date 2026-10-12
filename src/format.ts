@@ -44,6 +44,7 @@ export function formatSync(sync: ProgramscapeSyncStatus): string[] {
   return lines;
 }
 
+/** The human-readable status report that `programscape-router status` prints. */
 export function formatStatus(status: RouterStatus): string {
   const lines: string[] = [
     `programscape-router status at ${status.asOf}`,

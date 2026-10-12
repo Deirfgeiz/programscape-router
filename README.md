@@ -33,21 +33,59 @@ its source file.
 | Parallel | `PARALLEL_API_KEY` | `/v1/search` | `/v1/extract` | No public endpoint; add your credits in config |
 | Tavily | `TAVILY_API_KEY` | `/search` | `/extract` | Yes: `/usage` (no end date published) |
 
+## Install
+
+Once it is on npm, nothing to install: `npx programscape-router` runs the latest version.
+
+Until then, run it from GitHub: use `npx github:Deirfgeiz/programscape-router` wherever this page says
+`npx programscape-router`. It builds itself on install. Node 20 or later.
+
 ## Quick check
 
-Not on npm yet: until it is, use `npx github:Deirfgeiz/programscape-router` wherever this page says
-`npx programscape-router`. It builds itself on install.
+Set the keys you have, then check that each one works:
 
 ```bash
 export TAVILY_API_KEY=tvly-...
 export FIRECRAWL_API_KEY=fc-...
 
+npx programscape-router check             # one live search, scrape and balance read per key, each provider on its own
 npx programscape-router status            # enabled providers, the order and why, balances
 npx programscape-router search "seed round SAFE templates"
 npx programscape-router scrape https://example.com
 ```
 
-`status --json` prints the same thing as JSON. `status --refresh` re-reads balances.
+`check` makes one small search (`"startup credits"`, up to 3 results) and one scrape (`https://example.com`) with
+each key that is set, and reads the balance from Firecrawl and Tavily. It calls each provider directly, with no
+routing or failover, so every key is tested on its own. It prints, per call, ok or the failure class (see
+[Troubleshooting](#troubleshooting)), the latency, and how many results or characters came back:
+
+```text
+exa (EXA_API_KEY)
+  search   ok                      640 ms  3 results
+  scrape   ok                      910 ms  markdown, 1256 chars
+  balance  -                               no public balance endpoint (add your credits in config)
+
+firecrawl (FIRECRAWL_API_KEY)
+  search   FAIL unauthorized       120 ms  HTTP 401: Unauthorized: Invalid token
+  scrape   FAIL unauthorized        95 ms  HTTP 401: Unauthorized: Invalid token
+  balance  FAIL unauthorized        88 ms  HTTP 401: Unauthorized: Invalid token
+
+keenable: skipped (KEENABLE_API_KEY is not set)
+
+parallel: skipped (PARALLEL_API_KEY is not set)
+
+tavily: skipped (TAVILY_API_KEY is not set)
+
+FAIL: 2 of 5 calls passed, 3 failed; 3 providers skipped (no key).
+```
+
+It never prints result titles, URLs, snippets, page content or balance amounts, and a provider's error message is
+shown with every key replaced by `[redacted]`. It writes nothing to the ledger, sends nothing to Programscape, and
+doesn't read your config file. `check --json` prints the same report as JSON. It exits 0 when every call it made
+passed, and 1 otherwise (or when no key is set). A check costs each provider one search, one scrape and, where there
+is one, one balance read.
+
+`status --json` prints the status as JSON. `status --refresh` re-reads balances.
 
 ## Add it to your agent
 
@@ -233,7 +271,7 @@ search or scrape, and if it fails it says so once on stderr and your calls carry
 | What the provider says | What the router does |
 |---|---|
 | 402, or its documented "out of credits" error (Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS`) | Marks it spent until its billing period ends (if known) or for the rest of the session, and tries the next |
-| 429 rate limit, 5xx, timeout, network error | Tries the next provider for this call; doesn't mark it spent |
+| 429 rate limit, 5xx, timeout, network error, a feature not on your plan (Exa `FEATURE_DISABLED`) | Tries the next provider for this call; doesn't mark it spent |
 | Couldn't fetch that page, or refused that content | Tries the next provider for this call |
 | 401 or 403 (bad, disabled or revoked key) | Switches the provider off for the session, says so on stderr, and tries the next |
 | 400 or 422 (the request itself was wrong) | Returns the error to you without trying anyone else |
@@ -247,6 +285,28 @@ keys or balances.
 ```json
 { "days": { "2026-10-11": { "tavily": { "search": { "ok": 12, "rate_limited": 1 } } } } }
 ```
+
+## Troubleshooting
+
+`check`, the `tried` list in every `routing`, and the errors from `search` and `scrape` name what happened with one
+of these classes:
+
+| Class | What it means | What to do |
+|---|---|---|
+| `exhausted` | The provider says your credits or quota are spent (402, Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS` or a budget tag). | Check the provider's dashboard. A monthly allowance comes back when its billing period ends; credits from a program don't. |
+| `rate_limited` | 429: too many calls, too fast. | Wait and try again. The router moves to the next provider meanwhile. |
+| `unauthorized` | 401 or 403 (Keenable also uses 400 for a malformed key): the key is wrong, disabled or revoked. | Copy the key again from the provider's dashboard into the variable `check` names, and restart your MCP client so it picks it up. |
+| `bad_request` | 400 or 422: the provider rejected the request itself. | Read the message. If it says a field is wrong, the provider's API has probably changed: please open an issue with the `check --json` output. |
+| `server_error` | 5xx: the provider is having trouble. | Try again later. |
+| `timeout` | No answer within the timeout (30 s for search, 60 s for scrape, 10 s for a balance read; `timeoutMs` in config). | Try again; if it keeps happening, raise `timeoutMs`. |
+| `network_error` | The provider couldn't be reached at all. | Check your connection, proxy or firewall. |
+| `fetch_failed` | The provider answered, but couldn't fetch that page. | Try another page; the router tries the next provider for that call. |
+| `rejected` | The provider refused that content on policy grounds (Exa `PROHIBITED_CONTENT`). | Nothing is wrong with the key; the router tries the next provider. |
+| `invalid_response` | A 2xx answer in a shape the adapter couldn't read. | The provider's API has probably changed: please open an issue with the `check --json` output. |
+| `provider_error` | Any other answer, including a redirect (never followed, so your key stays with the provider) or a feature not on your plan (Exa `FEATURE_DISABLED`). | Read the message. |
+
+`check --json` output is safe to paste into an issue: it holds outcomes, statuses, latencies and counts, and the
+provider's error messages with your keys redacted.
 
 ## What it never does
 
@@ -267,18 +327,21 @@ const status = await router.status();
 const synced = await router.syncBalances(); // after `programscape-router connect`; only balance numbers are sent
 ```
 
-`createRouter` also takes `env`, `config`, `fetch`, `ledgerPath` (or `false`), `log` and `now` for testing.
+`createRouter` also takes `env`, `config`, `cwd`, `fetch`, `ledgerPath` (or `false`), `log` and `now`, mostly for
+testing. `runCheck()` and `formatCheck()` are the `check` command as functions. Everything the package exports is
+listed in [CHANGELOG.md](CHANGELOG.md); anything else is internal.
 
 ## Development
-
-Node 20 or later.
 
 ```bash
 npm install
 npm run typecheck
 npm test
 npm run build
+npm run smoke:pack   # packs the tarball, installs it in a temp project, imports it and type-checks it
 ```
+
+CI runs the first four on Node 20, 22 and 24, and the pack smoke test on Node 20 and 24.
 
 ## License
 
