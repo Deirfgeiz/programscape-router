@@ -1,0 +1,56 @@
+{
+  "name": "programscape-router",
+  "version": "0.1.0",
+  "description": "Route an AI agent's web search and scrape calls across providers with your own API keys, spending the credits that end first. Local MCP server and library.",
+  "license": "MIT",
+  "author": "Forgotten Things Labs LLC",
+  "homepage": "https://programscape.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Deirfgeiz/programscape-router.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "agents",
+    "search",
+    "scrape",
+    "credits",
+    "router"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "programscape-router": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
