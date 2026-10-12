@@ -36,8 +36,30 @@ its source file.
 | Exa | `EXA_API_KEY` | `/search` | `/contents` | No public endpoint; add your credits in config |
 | Firecrawl | `FIRECRAWL_API_KEY` | `/v2/search` | `/v2/scrape` | Yes: `/v2/team/credit-usage`, including when the billing period ends |
 | Keenable | `KEENABLE_API_KEY` | `/v1/search` | `/v1/fetch` | No public endpoint; add your credits in config |
+| Linkup | `LINKUP_API_KEY` | `/v1/search` | `/v1/fetch` | Yes: `/v1/credits/balance`, in US dollars (no end date published) |
 | Parallel | `PARALLEL_API_KEY` | `/v1/search` | `/v1/extract` | No public endpoint; add your credits in config |
 | Tavily | `TAVILY_API_KEY` | `/search` | `/extract` | Yes: `/usage` (no end date published) |
+| You.com | `YDC_API_KEY` | `/v1/search` | `/v1/contents` | Yes: `/v1/billing/account_balance`, in US dollars (no end date published) |
+
+### Linkup and You.com (new in 1.1)
+
+What each provider publishes, checked October 12, 2026. Free credits are the provider's to give and change; check
+their pages before you count on them.
+
+- **Linkup.** Get a key from the dashboard at [app.linkup.so](https://app.linkup.so). Linkup's
+  [pricing page](https://docs.linkup.so/pages/documentation/platform/pricing) says an account that signs up with a
+  professional email address is credited $20, and eligible accounts are topped back up to $20 each month. Linkup
+  prices in US dollars, so its balance is a dollar amount. The router searches at Linkup's `fast` depth (Linkup's
+  recommended default for agents) and fetches pages in its standard mode without JavaScript rendering, the
+  cheapest documented options. When the credits run out, Linkup answers 429 with `INSUFFICIENT_FUNDS_CREDITS` (or
+  `EXCEED_BUDGET_LIMIT` when the key has a budget), not 402; the router reads both as spent.
+- **You.com.** Get a key at [you.com/platform/api-keys](https://you.com/platform/api-keys) (it is shown only once).
+  You.com's [pricing page](https://you.com/pricing) offers "$100 free credit = 20,000 searches". Search and contents
+  go to `ydc-index.io` and the balance to `api.you.com`; both are You.com's own hosts. You.com reports the balance in
+  cents, and the router shows it in dollars (divided by 100, never rounded). If your key has no scope for contents
+  or for billing, You.com answers 403 `Missing required scopes`: the router skips You.com for that call only and
+  keeps it on for what the key can do. You.com's API Acceptable Use Policy forbids storing its results for re-use,
+  and the router stores none (it caches no provider's results).
 
 ## Keep your keys safe
 
@@ -55,8 +77,8 @@ npx @programscape/router keys set firecrawl
 npx @programscape/router keys list            # which keys are set and where from; never the keys themselves
 ```
 
-Providers are `exa`, `firecrawl`, `keenable`, `parallel` and `tavily`. That's all: the router finds the keys
-itself, so your agent's config holds none (see [Add it to your agent](#add-it-to-your-agent)).
+Providers are `exa`, `firecrawl`, `keenable`, `linkup`, `parallel`, `tavily` and `youcom`. That's all: the router
+finds the keys itself, so your agent's config holds none (see [Add it to your agent](#add-it-to-your-agent)).
 `keys remove tavily` deletes one. Keys are stored under service `programscape-router`, with the variable name
 (such as `TAVILY_API_KEY`) as the account, so you can also find them in Keychain Access, Credential Manager (as
 `TAVILY_API_KEY.programscape-router`) or Seahorse. To store a key from a script, pipe it in: `... | npx @programscape/router keys set
@@ -81,7 +103,9 @@ tavily --stdin`.
    EXA_API_KEY=op://Private/Exa/credential
    FIRECRAWL_API_KEY=op://Private/Firecrawl/credential
    KEENABLE_API_KEY=op://Private/Keenable/credential
+   LINKUP_API_KEY=op://Private/Linkup/credential
    TAVILY_API_KEY=op://Private/Tavily/credential
+   YDC_API_KEY=op://Private/You.com/credential
    ```
 
    Use your own vault, item and field names. Leave out any provider you don't have.
@@ -174,8 +198,8 @@ npx @programscape/router scrape https://example.com
 ```
 
 `check` makes one small search (`"startup credits"`, up to 3 results) and one scrape (`https://example.com`) with
-each key that is set, and reads the balance from Firecrawl and Tavily. It calls each provider directly, with no
-routing or failover, so every key is tested on its own. It prints, per call, ok or the failure class (see
+each key that is set, and reads the balance from Firecrawl, Linkup, Tavily and You.com. It calls each provider
+directly, with no routing or failover, so every key is tested on its own. It prints, per call, ok or the failure class (see
 [Troubleshooting](#troubleshooting)), the provider's HTTP status and documented error code if it gave one, what to do
 next, the latency, and how many results or characters came back:
 
@@ -452,18 +476,20 @@ which program a provider's balance belongs to. It keeps nothing from the answer 
 local sync record.
 
 **Each balance report.** For each provider whose balance the router reads live from the provider's own endpoint
-(Firecrawl's remaining credits, Tavily's plan credits), and only for a program you kept on your plan that shows as
-approved, it calls `report_balance` with exactly these five fields:
+(Firecrawl's remaining credits, Linkup's and You.com's dollar balances, Tavily's plan credits), and only for a
+program you kept on your plan that shows as approved, it calls `report_balance` with exactly these five fields:
 
 ```json
 { "programId": "firecrawl.startup-deal", "amount": 1000, "unit": "credits", "asOf": "2026-10-11T12:00:00.000Z", "source": "router" }
 ```
 
-The amount goes in the unit the provider reported (`usd`, `credits` or `requests`); it is never converted, rounded or
-added to another balance. `asOf` is when the router read it from the provider. Programscape answers whether it took
-the reading: if your plan already holds a later one, it keeps that, and `sync` says nothing changed. When it refuses
-a balance (the program isn't kept or approved, or your low-balance reminder is in another unit), `sync` shows its
-reason, and nothing on your plan changes.
+The amount goes in the unit the provider reported (`usd`, `credits` or `requests`); it is never rounded or added to
+another balance, and the only conversion is You.com's cents into dollars. Programscape records dollars to the cent,
+so a balance with a fraction of a cent (Linkup and You.com can report one) isn't sent, and `sync` says why. `asOf` is
+when the router read it from the provider. Programscape answers whether it took the reading: if your plan already
+holds a later one, it keeps that, and `sync` says nothing changed. When it refuses a balance (the program isn't kept
+or approved, or your low-balance reminder is in another unit), `sync` shows its reason, and nothing on your plan
+changes.
 
 ### What is never sent
 
@@ -575,10 +601,10 @@ search or scrape, and if it fails it says so once on stderr and your calls carry
 
 | What the provider says | What the router does |
 |---|---|
-| 402, or its documented "out of credits" error (Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS`) | Marks it spent until its billing period ends (if known) or for the rest of the session, and tries the next |
-| 429 rate limit, 5xx, timeout, network error, a feature not on your plan (Exa `FEATURE_DISABLED`) | Tries the next provider for this call; doesn't mark it spent |
-| Couldn't fetch that page, or refused that content | Tries the next provider for this call |
-| 401 or 403 (bad, disabled or revoked key) | Switches the provider off for the session, says so on stderr, and tries the next |
+| 402, or its documented "out of credits" error (Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS`, Linkup 429 `INSUFFICIENT_FUNDS_CREDITS` or `EXCEED_BUDGET_LIMIT`) | Marks it spent until its billing period ends (if known) or for the rest of the session, and tries the next |
+| 429 rate limit, 5xx, timeout, network error, a feature not on your plan (Exa `FEATURE_DISABLED`, You.com 403 `Missing required scopes`) | Tries the next provider for this call; doesn't mark it spent |
+| Couldn't fetch that page (including Linkup's `FETCH_*` 400s), or refused that content | Tries the next provider for this call |
+| 401 or 403 (bad, disabled or revoked key), or Linkup's 402 (it asks for payment only when no key arrived) | Switches the provider off for the session, says so on stderr, and tries the next |
 | 400 or 422 (the request itself was wrong) | Returns the error to you without trying anyone else |
 
 ## The local ledger
@@ -599,17 +625,17 @@ of these classes:
 
 | Class | What it means | What to do |
 |---|---|---|
-| `exhausted` | The provider says your credits or quota are spent (402, Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS` or a budget tag). | Check the provider's dashboard. A monthly allowance comes back when its billing period ends; credits from a program don't. |
-| `rate_limited` | 429: too many calls, too fast. | Wait and try again. The router moves to the next provider meanwhile. |
-| `unauthorized` | 401 or 403 (Keenable also uses 400 for a malformed key): the key is wrong, disabled or revoked. | Copy the key again from the provider's dashboard and store it again (`keys set <provider>`, or the variable `check` names), then restart your MCP client so it picks it up. |
+| `exhausted` | The provider says your credits or quota are spent (402, Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS` or a budget tag, Linkup 429 `INSUFFICIENT_FUNDS_CREDITS` or `EXCEED_BUDGET_LIMIT`). | Check the provider's dashboard. A monthly allowance comes back when its billing period ends; credits from a program don't. |
+| `rate_limited` | 429: too many calls, too fast (for Linkup, a 429 without an out-of-credit code). | Wait and try again. The router moves to the next provider meanwhile. |
+| `unauthorized` | 401 or 403 (Keenable also uses 400 for a malformed key; Linkup answers 402 when it didn't take a key): the key is wrong, disabled or revoked. | Copy the key again from the provider's dashboard and store it again (`keys set <provider>`, or the variable `check` names), then restart your MCP client so it picks it up. |
 | `bad_request` | 400 or 422: the provider rejected the request itself. | Run `check --verbose` and read the message (don't share it). If it says a field is wrong, the provider's API has probably changed: please open an issue with the `check --json` output. |
 | `server_error` | 5xx: the provider is having trouble. | Try again later. |
 | `timeout` | No answer within the timeout (30 s for search, 60 s for scrape, 10 s for a balance read; `timeoutMs` in config). | Try again; if it keeps happening, raise `timeoutMs`. |
 | `network_error` | The provider couldn't be reached at all. | Check your connection, proxy or firewall. |
-| `fetch_failed` | The provider answered, but couldn't fetch that page. | Try another page; the router tries the next provider for that call. |
+| `fetch_failed` | The provider answered, but couldn't fetch that page (Linkup says so with a `FETCH_*` code on a 400). | Try another page; the router tries the next provider for that call. |
 | `rejected` | The provider refused that content on policy grounds (Exa `PROHIBITED_CONTENT`). | Nothing is wrong with the key; the router tries the next provider. |
 | `invalid_response` | A 2xx answer in a shape the adapter couldn't read. | The provider's API has probably changed: please open an issue with the `check --json` output. |
-| `provider_error` | Any other answer, including a redirect (never followed, so your key stays with the provider) or a feature not on your plan (Exa `FEATURE_DISABLED`). | Run `check --verbose` and read the provider's message (don't share it). |
+| `provider_error` | Any other answer, including a redirect (never followed, so your key stays with the provider) or a feature not on your plan (Exa `FEATURE_DISABLED`, You.com 403 `Missing required scopes`: the key has no scope for that endpoint; turn it on for the key in You.com's platform, or let the router use another provider for it). | Run `check --verbose` and read the provider's message (don't share it). |
 
 If `keys set` says no keychain is available, the router can't reach your system's password store (most often a
 Linux machine without a desktop session). Keys in environment variables still work: use 1Password, another
