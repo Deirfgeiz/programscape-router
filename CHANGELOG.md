@@ -18,6 +18,9 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   nothing to the ledger, never contacts Programscape and does not read the config file. Exits 0 only when at least
   one call was made and every call passed. Also available as `runCheck()` and `formatCheck()`.
 - README: Troubleshooting, by failure class.
+- README: Keep your keys safe. Run the router through 1Password's `op run` with secret references, or set keys at a
+  hidden prompt for one Terminal window. The Claude Code and MCP client examples no longer save keys in plain text
+  by default.
 - `CHANGELOG.md`, and a pack-and-import smoke test in CI (`npm run smoke:pack`).
 
 ### Changed

@@ -33,6 +33,53 @@ its source file.
 | Parallel | `PARALLEL_API_KEY` | `/v1/search` | `/v1/extract` | No public endpoint; add your credits in config |
 | Tavily | `TAVILY_API_KEY` | `/search` | `/extract` | Yes: `/usage` (no end date published) |
 
+## Keep your keys safe
+
+Your provider keys work like passwords: anyone holding one can spend that account's credits. Keep them in a password
+manager, and let the router read them only when it starts. The router itself never writes a key to disk.
+
+### With 1Password (recommended)
+
+1. Install the 1Password CLI and turn on its integration with the 1Password app:
+   [Get started with 1Password CLI](https://developer.1password.com/docs/cli/get-started/).
+2. Create `~/.config/programscape-router/keys.env`. It holds *secret references*, not keys: each line says where in
+   1Password a key lives. In the 1Password app, open the item, click the field's menu and choose **Copy Secret
+   Reference**.
+
+   ```bash
+   EXA_API_KEY=op://Private/Exa/credential
+   FIRECRAWL_API_KEY=op://Private/Firecrawl/credential
+   KEENABLE_API_KEY=op://Private/Keenable/credential
+   TAVILY_API_KEY=op://Private/Tavily/credential
+   ```
+
+   Use your own vault, item and field names. Leave out any provider you don't have.
+3. Run the router through `op run`. 1Password asks you to approve, then hands the keys to that one process only:
+
+   ```bash
+   op run --env-file="$HOME/.config/programscape-router/keys.env" -- npx programscape-router check
+   ```
+
+To add it to your agent this way, see [Add it to your agent](#add-it-to-your-agent).
+
+### Just for one Terminal window
+
+Copy a key from your password manager and paste it at a hidden prompt. It stays out of your shell history and
+disappears when you close the window (zsh, the macOS default):
+
+```bash
+read -rs "TAVILY_API_KEY?Paste your Tavily key, then press Return: " && export TAVILY_API_KEY
+```
+
+Repeat for each key, then run the router in the same window.
+
+### What to avoid
+
+- Pasting a key into a chat, an issue, or a file you commit.
+- Adding `export ..._API_KEY=...` to `~/.zshrc` or another shell profile, which keeps the key in plain text.
+- Passing keys with `claude mcp add -e`, or in the `env` block of an MCP client's JSON config. That works, but the
+  client saves the key in plain text in its config file in your home folder. Prefer `op run`.
+
 ## Install
 
 Once it is on npm, nothing to install: `npx programscape-router` runs the latest version.
@@ -42,12 +89,11 @@ Until then, run it from GitHub: use `npx github:Deirfgeiz/programscape-router` w
 
 ## Quick check
 
-Set the keys you have, then check that each one works:
+Make your keys available (see [Keep your keys safe](#keep-your-keys-safe)), then check that each one works. The
+examples below assume the keys are already set in this window, for example with the hidden prompt. With 1Password,
+put `op run --env-file="$HOME/.config/programscape-router/keys.env" --` in front of each command.
 
 ```bash
-export TAVILY_API_KEY=tvly-...
-export FIRECRAWL_API_KEY=fc-...
-
 npx programscape-router check             # one live search, scrape and balance read per key, each provider on its own
 npx programscape-router status            # enabled providers, the order and why, balances
 npx programscape-router search "seed round SAFE templates"
@@ -91,34 +137,39 @@ is one, one balance read.
 
 ### Claude Code
 
+With 1Password (see [Keep your keys safe](#keep-your-keys-safe)), so no key is stored in Claude Code's config. Use
+the full path to your `keys.env`, since `~` isn't expanded here:
+
 ```bash
-claude mcp add programscape-router \
-  -e TAVILY_API_KEY=tvly-... \
-  -e FIRECRAWL_API_KEY=fc-... \
-  -- npx -y programscape-router
+claude mcp add programscape-router -s user -- op run --env-file=/Users/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
 ```
 
-Add one `-e` per key you have, and `-s user` to use it in every project. Claude Code keeps these values in its own
-local config on your machine.
+1Password asks you to approve when Claude Code starts the router. `-s user` makes it available in every project.
+
+Without a password manager, pass each key with `-e`. Claude Code then saves the keys in plain text in its config:
+
+```bash
+claude mcp add programscape-router -s user -e TAVILY_API_KEY=tvly-... -e FIRECRAWL_API_KEY=fc-... -- npx -y programscape-router
+```
 
 ### Cursor, Claude Desktop and other MCP clients
 
-Add a stdio server to the client's MCP config (for Cursor, `~/.cursor/mcp.json`):
+Add a stdio server to the client's MCP config (for Cursor, `~/.cursor/mcp.json`). With 1Password, the config holds
+no keys:
 
 ```json
 {
   "mcpServers": {
     "programscape-router": {
-      "command": "npx",
-      "args": ["-y", "programscape-router"],
-      "env": {
-        "TAVILY_API_KEY": "tvly-...",
-        "FIRECRAWL_API_KEY": "fc-..."
-      }
+      "command": "op",
+      "args": ["run", "--env-file=/Users/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
     }
   }
 }
 ```
+
+Without a password manager, use `"command": "npx"`, `"args": ["-y", "programscape-router"]` and an `env` block with
+your keys, which the client saves in plain text.
 
 The server offers three tools:
 
