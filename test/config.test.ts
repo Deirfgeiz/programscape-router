@@ -57,6 +57,20 @@ describe("config validation", () => {
   });
 });
 
+describe("Programscape sync settings", () => {
+  it("accepts sync auto or manual and a program per provider", () => {
+    const config = { programscape: { sync: "auto" }, providers: { firecrawl: { programscapeProgram: "firecrawl.startup-deal" } } };
+    expect(parseConfig(config)).toEqual(config);
+    expect(parseConfig({ programscape: { sync: "manual" } })).toEqual({ programscape: { sync: "manual" } });
+  });
+
+  it("explains a wrong sync value and rejects a token in config", () => {
+    expect(message({ programscape: { sync: "always" } })).toContain('programscape.sync: Use "manual"');
+    expect(message({ programscape: { token: "x" } })).toContain("programscape");
+    expect(message({ providers: { firecrawl: { programscapeProgram: "" } } })).toContain("providers.firecrawl.programscapeProgram");
+  });
+});
+
 describe("config lookup", () => {
   function dirs() {
     const root = mkdtempSync(join(tmpdir(), "psr-config-"));

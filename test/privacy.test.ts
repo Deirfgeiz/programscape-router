@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sanitizeLedger } from "../src/ledger.js";
+import { connect } from "../src/programscape/connect.js";
 import { createRouter } from "../src/router.js";
 import { URLS, fixture, mockFetch, ok, status, type Responder } from "./helpers.js";
+import { ORIGIN, combine, fakeProgramscape } from "./programscape-fake.js";
 
 const KEYS = {
   EXA_API_KEY: "exa-SECRET-1111",
@@ -124,5 +126,78 @@ describe("privacy", () => {
     const clean = sanitizeLedger(dirty);
     expect(JSON.stringify(clean)).not.toContain("zebra");
     expect(clean.days).toEqual({ "2026-10-11": { exa: { search: { ok: 2 } } } });
+  });
+
+  it("sends Programscape only balance numbers: no query, URL or key, and its token goes nowhere else", async () => {
+    const root = mkdtempSync(join(tmpdir(), "psr-privacy-sync-"));
+    const env = { ...KEYS, XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") };
+    const fake = fakeProgramscape({
+      kept: [
+        { id: "firecrawl.startup-deal", provider: "firecrawl", approval: "approved" },
+        { id: "tavily.startup-credits", provider: "tavily", approval: "approved" },
+      ],
+    });
+    const providers = mockFetch({
+      [URLS.exaSearch]: echo(503),
+      [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
+      [URLS.firecrawlSearch]: echo(503),
+      [URLS.firecrawlScrape]: echo(503),
+      [URLS.keenableSearch]: echo(503),
+      [URLS.parallelSearch]: echo(503),
+      [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      [URLS.tavilySearch]: ok(fixture("tavily-search")),
+      [URLS.exaContents]: echo(503),
+      [URLS.keenableFetch]: echo(503),
+      [URLS.parallelExtract]: echo(503),
+      [URLS.tavilyExtract]: ok({ results: [{ url: PAGE, raw_content: "secret board minutes zebra" }] }),
+    });
+    const fetch = combine(fake.fetch, providers.fetch);
+    await connect({ env, fetch, now: () => new Date(), print: () => {}, openBrowser: fake.browser });
+    const logs: string[] = [];
+    const config = {
+      programscape: { sync: "auto" as const },
+      providers: { exa: { credits: [{ label: "Exa grant", remaining: 600, unit: "usd" }] } },
+    };
+    const router = createRouter({ env, config, fetch, ledgerPath: false, log: (m) => logs.push(m) });
+
+    await router.search({ query: QUERY });
+    await router.scrape({ url: PAGE });
+    await router.flush(); // the automatic sync after the balance reads
+    const manual = await router.syncBalances();
+    expect(manual.filter((result) => result.outcome === "synced").map((result) => result.provider)).toEqual(["firecrawl", "tavily"]);
+
+    const toProgramscape = fake.seen;
+    expect(toProgramscape.length).toBeGreaterThan(0);
+    for (const request of toProgramscape) {
+      expect(new URL(request.url).origin).toBe(ORIGIN);
+      expect(request.redirect).toBe("manual");
+      const sent = JSON.stringify(request);
+      for (const key of Object.values(KEYS)) expect(sent).not.toContain(key);
+      expect(sent).not.toContain("SECRET-");
+      expect(sent).not.toContain("zebra");
+      expect(sent).not.toContain("private.example.com");
+      expect(sent).not.toContain("board");
+    }
+
+    // Tool calls: my_plan with no arguments, and report_balance with exactly the five allowed fields.
+    expect(new Set(fake.toolCalls.map((call) => call.name))).toEqual(new Set(["my_plan", "report_balance"]));
+    for (const call of fake.toolCalls) {
+      if (call.name === "my_plan") expect(call.arguments).toEqual({});
+      else {
+        expect(Object.keys(call.arguments).sort()).toEqual(["amount", "asOf", "programId", "source", "unit"]);
+        expect(call.arguments.source).toBe("router");
+        expect(typeof call.arguments.amount).toBe("number");
+        expect(["usd", "credits", "requests"]).toContain(call.arguments.unit);
+      }
+    }
+    // Config-entered credits are never reported.
+    expect(fake.toolCalls.some((call) => call.arguments.amount === 600)).toBe(false);
+
+    // Provider calls never carry the Programscape token, and Programscape calls carry no provider key (above).
+    for (const call of providers.calls) {
+      expect(JSON.stringify(call)).not.toContain("TOKENSECRET");
+      expect(new URL(call.url).host).not.toContain("programscape");
+    }
+    for (const line of logs) expect(line).not.toContain("TOKENSECRET");
   });
 });

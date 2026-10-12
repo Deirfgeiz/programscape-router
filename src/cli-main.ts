@@ -1,5 +1,7 @@
-import { ConfigError } from "./config.js";
+import { ConfigError, loadConfig } from "./config.js";
 import { formatStatus } from "./format.js";
+import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
+import { ProgramscapeError } from "./programscape/guard.js";
 import { runMcpServer } from "./mcp.js";
 import { type Router, RouterError, type RouterOptions, createRouter } from "./router.js";
 import type { Routing } from "./types.js";
@@ -10,6 +12,13 @@ export interface CliIo {
   stderr: (text: string) => void;
 }
 
+export interface CliOptions extends RouterOptions {
+  /** How `connect` opens the browser. Defaults to the system browser. */
+  openBrowser?: ConnectOptions["openBrowser"];
+  /** How long `connect` waits for the browser. */
+  connectWaitMs?: number;
+}
+
 const USAGE = `programscape-router ${VERSION}
 Routes web search and scrape calls across your own provider keys, spending the credits that end first.
 
@@ -18,10 +27,14 @@ Usage:
   programscape-router status [--json] [--refresh]
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
+  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan
+  programscape-router sync [--json]              Send live balances to your plan now
+  programscape-router disconnect                 Revoke the connection and delete the token file
   programscape-router --help | --version
 
 Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY.
 Find startup credits for these tools at https://programscape.com
+Nothing is sent to Programscape unless you run connect, and then only balance numbers.
 `;
 
 function formatRouting(routing: Routing): string {
@@ -46,8 +59,37 @@ function takeValue(args: string[], flag: string): string | undefined {
   return value;
 }
 
+async function runConnect(args: string[], io: CliIo, options: CliOptions): Promise<number> {
+  const env = options.env ?? process.env;
+  const noBrowser = takeFlag(args, "--no-browser");
+  try {
+    const result = await connect({
+      env,
+      fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+      now: options.now ?? (() => new Date()),
+      print: (line) => io.stdout(`${line}\n`),
+      ...(noBrowser ? { openBrowser: false as const } : options.openBrowser !== undefined ? { openBrowser: options.openBrowser } : {}),
+      ...(options.connectWaitMs !== undefined ? { waitMs: options.connectWaitMs } : {}),
+    });
+    io.stdout(`Connected to Programscape${result.account ? ` as ${result.account}` : ""}. Token stored at ${result.tokenPath} (readable only by you).\n`);
+    const config = options.config ?? loadConfig(env, options.cwd).config;
+    io.stdout(
+      config.programscape?.sync === "auto"
+        ? "Balances will sync automatically after a balance read, at most once per provider every 6 hours.\n"
+        : 'Run `programscape-router sync` to send balances now, or set "programscape": { "sync": "auto" } in config to sync automatically.\n',
+    );
+    return 0;
+  } catch (error) {
+    if (error instanceof ProgramscapeError) {
+      io.stderr(`Not connected: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+}
+
 /** Runs one CLI command. Returns the exit code; "mcp" resolves once the server is connected. */
-export async function main(argv: string[], io: CliIo, options: RouterOptions = {}): Promise<number> {
+export async function main(argv: string[], io: CliIo, options: CliOptions = {}): Promise<number> {
   const args = [...argv];
   const command = args.shift() ?? "mcp";
 
@@ -60,9 +102,23 @@ export async function main(argv: string[], io: CliIo, options: RouterOptions = {
     return 0;
   }
 
+  if (command === "disconnect") {
+    const result = await disconnect({ env: options.env ?? process.env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
+    if (!result.wasConnected) io.stdout("Programscape sync was not connected. Nothing to do.\n");
+    else if (result.revoked) io.stdout("Disconnected: Programscape revoked the router's access and the token file is deleted.\n");
+    else io.stdout("Disconnected: the token file is deleted. Programscape could not confirm the revocation; you can also remove the router's access on programscape.com.\n");
+    return 0;
+  }
+
+  const { openBrowser: _openBrowser, connectWaitMs: _connectWaitMs, ...routerOptions } = options;
   let router: Router;
   try {
-    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...options });
+    if (command === "connect") {
+      // Validate the config before starting a sign-in.
+      if (!options.config) loadConfig(options.env ?? process.env, options.cwd);
+      return await runConnect(args, io, options);
+    }
+    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions });
   } catch (error) {
     if (error instanceof ConfigError) {
       io.stderr(`${error.message}\n`);
@@ -110,6 +166,22 @@ export async function main(argv: string[], io: CliIo, options: RouterOptions = {
           io.stderr(`${formatRouting(response.routing)}\n`);
         }
         return 0;
+      }
+      case "sync": {
+        const json = takeFlag(args, "--json");
+        try {
+          const results = await router.syncBalances();
+          if (json) io.stdout(`${JSON.stringify(results, null, 2)}\n`);
+          else if (results.length === 0) io.stdout("No provider key is set, so there is no balance to sync.\n");
+          else for (const result of results) io.stdout(`${result.provider}: ${result.message}\n`);
+          return results.some((result) => result.outcome === "failed" || result.outcome === "refused") ? 1 : 0;
+        } catch (error) {
+          if (error instanceof ProgramscapeError) {
+            io.stderr(`${error.message}\n`);
+            return 1;
+          }
+          throw error;
+        }
       }
       default:
         io.stderr(`Unknown command "${command}".\n\n${USAGE}`);

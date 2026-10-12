@@ -8,3 +8,7 @@ export { formatStatus } from "./format.js";
 export { createMcpServer, runMcpServer } from "./mcp.js";
 export { VERSION } from "./version.js";
 export * from "./types.js";
+export { createBalanceSync, AUTO_SYNC_INTERVAL_MS } from "./programscape/sync.js";
+export type { BalanceSync, BalanceReport, SyncResult, ProgramscapeSyncStatus, ProviderReading } from "./programscape/sync.js";
+export { connect, disconnect } from "./programscape/connect.js";
+export { PROGRAMSCAPE_MCP_URL, PROGRAMSCAPE_ORIGIN, ProgramscapeError } from "./programscape/guard.js";
