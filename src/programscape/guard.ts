@@ -12,6 +12,7 @@ export const PROGRAMSCAPE_ORIGIN = "https://programscape.com";
 export const PROGRAMSCAPE_MCP_URL = `${PROGRAMSCAPE_ORIGIN}/api/mcp`;
 export const PROGRAMSCAPE_SCOPE = "plans";
 
+/** A failure talking to Programscape during connect, sync or disconnect. Never carries the token. */
 export class ProgramscapeError extends Error {
   /** "rejected": Programscape refused the credentials (a refresh or a call with the token). */
   readonly kind: "rejected" | "refused" | "unreachable" | "invalid";

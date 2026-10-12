@@ -16,6 +16,7 @@
  */
 import type { Balance, Capability, OrderRule, ProviderId } from "./types.js";
 
+/** Where a provider falls under credits ending first: dated credits, then undated credits, then pay-as-you-go. */
 export type Tier = "credits-ending" | "credits-no-end-date" | "pay-as-you-go";
 
 export interface ProviderStanding {
@@ -31,20 +32,27 @@ export interface ProviderStanding {
   balances: Balance[];
 }
 
+/** One provider's place in the order for a capability. */
 export interface OrderEntry {
   provider: ProviderId;
+  /** 1 is tried first. */
   position: number;
   tier: Tier;
+  /** Why it holds this position, in words. */
   reason: string;
+  /** When the credits that placed it end, if known. */
   endsOn?: string;
+  /** Remaining divided by the plan or award (0 to 1), only where both are known in one unit. */
   shareRemaining?: number;
 }
 
+/** A provider left out of the order for a capability, and why (no key, switched off, credits spent, not in your order). */
 export interface SkippedEntry {
   provider: ProviderId;
   reason: string;
 }
 
+/** The order the router will try providers in for one capability. */
 export interface CapabilityOrder {
   capability: Capability;
   rule: OrderRule;

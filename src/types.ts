@@ -1,27 +1,40 @@
+/** Every provider the router has an adapter for, alphabetically. Order here is not a preference. */
 export const PROVIDER_IDS = ["exa", "firecrawl", "keenable", "parallel", "tavily"] as const;
+/** One of PROVIDER_IDS. */
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
+/** What a provider can be asked to do. */
 export const CAPABILITIES = ["search", "scrape"] as const;
+/** One of CAPABILITIES. */
 export type Capability = (typeof CAPABILITIES)[number];
 
+/** A web search. */
 export interface SearchRequest {
+  /** What to search for. Must not be empty. */
   query: string;
   /** Upper bound on results. Each provider's own maximum still applies. Default 10. */
   maxResults?: number;
 }
 
+/** One page to fetch as markdown. */
 export interface ScrapeRequest {
+  /** An absolute http(s) URL. */
   url: string;
 }
 
+/** One search hit, as the serving provider returned it. */
 export interface SearchResult {
   title: string;
   url: string;
+  /** The provider's excerpt or description, when it gave one. */
   snippet?: string;
+  /** ISO 8601, when the provider gave a publication date. */
   publishedAt?: string;
 }
 
+/** One fetched page. */
 export interface ScrapeResult {
+  /** The page URL the provider reports (after its redirects), or the requested URL. */
   url: string;
   title?: string;
   markdown: string;
@@ -45,15 +58,20 @@ export type Outcome =
   | "invalid_response" // the provider answered 2xx with a shape we could not read
   | "provider_error"; // any other non-2xx
 
+/** One provider tried for a call, and how it ended. */
 export interface Attempt {
   provider: ProviderId;
   outcome: Outcome;
+  /** The provider's HTTP status, when it answered with an error status. */
   status?: number;
+  /** The provider's error message, with keys redacted. */
   message?: string;
 }
 
+/** "credits-ending-first" (the default) or "your-order" (an order from config). */
 export type OrderRule = "your-order" | "credits-ending-first";
 
+/** Which provider served a call, why it held its position, and every provider tried. */
 export interface Routing {
   provider: ProviderId;
   /** Why this provider held its position in the order. */
@@ -62,16 +80,19 @@ export interface Routing {
   tried: Attempt[];
 }
 
+/** What router.search() returns. */
 export interface SearchResponse {
   results: SearchResult[];
   routing: Routing;
 }
 
+/** What router.scrape() returns. */
 export interface ScrapeResponse {
   result: ScrapeResult;
   routing: Routing;
 }
 
+/** Plan or award credits, a pay-as-you-go limit, or a limit set on one key. */
 export type BalanceKind = "credits" | "pay-as-you-go" | "key-limit";
 
 /**

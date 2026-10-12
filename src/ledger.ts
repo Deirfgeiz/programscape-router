@@ -3,8 +3,8 @@
  * each call ended. It never stores a query, a URL, page content, a key or a balance.
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { stateDir } from "./paths.js";
 import { CAPABILITIES, PROVIDER_IDS, type Capability, type Outcome, type ProviderId } from "./types.js";
 
 const OUTCOMES: readonly Outcome[] = [
@@ -34,9 +34,9 @@ export interface LedgerFile {
 const ABOUT =
   "programscape-router call counts per UTC day, provider and capability. Counts only: no queries, URLs, content or keys.";
 
-export function defaultLedgerPath(env: NodeJS.ProcessEnv = process.env): string {
-  const base = env.XDG_STATE_HOME && env.XDG_STATE_HOME.length > 0 ? env.XDG_STATE_HOME : join(homedir(), ".local", "state");
-  return join(base, "programscape-router", "ledger.json");
+/** ~/.local/state/programscape-router/ledger.json; %LOCALAPPDATA%\programscape-router\ledger.json on Windows. */
+export function defaultLedgerPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  return join(stateDir(env, platform), "ledger.json");
 }
 
 /** Keep only well-formed counts, so nothing else can ever be carried forward into the file. */

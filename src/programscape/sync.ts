@@ -12,15 +12,17 @@
 import type { RouterConfig } from "../config.js";
 import { ADAPTERS, type FetchLike } from "../providers/index.js";
 import type { Balance, ProviderId } from "../types.js";
-import { Connection, RECONNECT_MESSAGE } from "./connection.js";
+import { Connection, RECONNECT_MESSAGE, REMOTE_UNCERTAIN_MESSAGE } from "./connection.js";
 import { ProgramscapeError, programscapeFetch } from "./guard.js";
 import { type LiveBalance, amountIssue, liveBalance, mapProgram, readPlanPrograms } from "./plan.js";
-import { type ProviderSyncRecord, type SyncState, hasTokenFile, readSyncState, writeSyncState } from "./store.js";
+import { type ProviderSyncRecord, type SyncState, hasTokenFile, readConnectionState, readSyncState, writeSyncState } from "./store.js";
 
 export const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const PENDING_MESSAGE = "Programscape sign-in is waiting for browser consent. Run `programscape-router disconnect` to cancel it.";
 const AUTO_SYNC_TIMEOUT_MS = 30_000;
 
+/** "manual": only on `programscape-router sync`. "auto": also after a balance read, at most every 6 hours per provider. */
 export type SyncMode = "manual" | "auto";
 
 export interface BalanceReport {
@@ -31,6 +33,7 @@ export interface BalanceReport {
   source: "router";
 }
 
+/** One provider's result from router.syncBalances(). */
 export interface SyncResult {
   provider: ProviderId;
   outcome: ProviderSyncRecord["outcome"] | "skipped";
@@ -45,6 +48,7 @@ export interface ProviderReading {
   note?: string;
 }
 
+/** The balance sync's state, read from local files only. Part of router.status(). */
 export interface ProgramscapeSyncStatus {
   sync: "on" | "off";
   mode: SyncMode;
@@ -123,24 +127,19 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
     env,
     fetch: guarded,
     now,
-    onRejected: () =>
-      updateState((state) => {
-        state.off = { since: now().toISOString(), reason: RECONNECT_MESSAGE };
-      }).catch(() => undefined),
   });
 
   /** Removes token material from a message, whatever produced it. */
   function clean(message: string): string {
     let text = message;
-    for (const secret of connection.secrets()) {
-      if (secret.length >= 4) text = text.split(secret).join("[redacted]");
+    for (const secret of [...connection.secrets()].sort((a, b) => b.length - a.length)) {
+      if (secret.length > 0) text = text.split(secret).join("[redacted]");
     }
     return text;
   }
 
   async function connected(): Promise<boolean> {
-    const state = await readSyncState(env);
-    return !state.off && (await hasTokenFile(env));
+    return (await readConnectionState(env))?.phase === "connected" && (await hasTokenFile(env));
   }
 
   async function run(readings: readonly ProviderReading[]): Promise<SyncResult[]> {
@@ -236,12 +235,15 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
 
     async status() {
       const state = await readSyncState(env);
-      const on = !state.off && (await hasTokenFile(env));
+      const connectionState = await readConnectionState(env);
+      const on = connectionState?.phase === "connected" && (await hasTokenFile(env));
       return {
         sync: on ? "on" : "off",
         mode,
         ...(state.lastSyncedAt && on ? { lastSyncedAt: state.lastSyncedAt } : {}),
-        ...(state.off ? { note: state.off.reason } : {}),
+        ...(connectionState?.phase === "cleanup-needed" ? { note: REMOTE_UNCERTAIN_MESSAGE } : {}),
+        ...(connectionState?.phase === "sync-off" ? { note: RECONNECT_MESSAGE } : {}),
+        ...(connectionState?.phase === "awaiting-consent" ? { note: PENDING_MESSAGE } : {}),
         providers: on
           ? Object.entries(state.providers).map(([provider, entry]) => ({ provider: provider as ProviderId, ...(entry as ProviderSyncRecord) }))
           : [],
@@ -250,8 +252,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
 
     async sync(readings) {
       if (!(await connected())) {
-        const state = await readSyncState(env);
-        throw new ProgramscapeError("rejected", state.off?.reason ?? "Programscape sync is off. Run `programscape-router connect` first.");
+        const state = await readConnectionState(env);
+        throw new ProgramscapeError("rejected", state?.phase === "cleanup-needed" ? REMOTE_UNCERTAIN_MESSAGE : state?.phase === "sync-off" ? RECONNECT_MESSAGE : state?.phase === "awaiting-consent" ? PENDING_MESSAGE : "Programscape sync is off. Run `programscape-router connect` first.");
       }
       let results: SyncResult[];
       try {

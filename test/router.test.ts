@@ -213,6 +213,24 @@ describe("failover", () => {
     expect(response.routing.tried[0]).toMatchObject({ provider: "keenable", outcome: "unauthorized", status: 403 });
   });
 
+  it("on Exa 403 FEATURE_DISABLED fails over for that call but keeps Exa on for what the plan includes", async () => {
+    const { router, logs } = setup(
+      {
+        [URLS.exaSearch]: status(403, { requestId: "r", error: "Not on your plan", tag: "FEATURE_DISABLED" }),
+        [URLS.exaContents]: ok(fixture("exa-contents")),
+        [URLS.tavilySearch]: ok(TAVILY_RESULTS),
+        ...tavilyUsageUnknown,
+      },
+      twoProviders,
+    );
+    const response = await router.search({ query: "q" });
+    expect(response.routing.provider).toBe("tavily");
+    expect(response.routing.tried[0]).toMatchObject({ provider: "exa", outcome: "provider_error", status: 403 });
+    expect(logs).toEqual([]);
+    expect((await router.scrape({ url: "https://example.com/" })).routing.provider).toBe("exa");
+    expect((await router.status()).providers.find((p) => p.id === "exa")?.disabled).toBeUndefined();
+  });
+
   it("on 400 returns the error to the caller without failover", async () => {
     const { router, calls } = setup(
       { [URLS.exaSearch]: status(400, { error: "numResults must be <= 100", tag: "INVALID_REQUEST_BODY" }), [URLS.tavilySearch]: ok(TAVILY_RESULTS), ...tavilyUsageUnknown },

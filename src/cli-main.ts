@@ -1,5 +1,8 @@
+import { formatCheck, runCheck } from "./check.js";
+import { type KeysOptions, runKeys } from "./cli-keys.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { formatStatus } from "./format.js";
+import { type KeyringLoader, resolveKeys } from "./keys.js";
 import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
 import { ProgramscapeError } from "./programscape/guard.js";
 import { runMcpServer } from "./mcp.js";
@@ -17,6 +20,13 @@ export interface CliOptions extends RouterOptions {
   openBrowser?: ConnectOptions["openBrowser"];
   /** How long `connect` waits for the browser. */
   connectWaitMs?: number;
+  /** Loads the native keychain module. Tests replace it. */
+  keyringLoader?: KeyringLoader;
+  /** The terminal `keys set` reads from. Defaults to process.stdin. */
+  stdin?: KeysOptions["stdin"];
+  /** Where `keys set` shows its prompt. Defaults to process.stderr. */
+  promptOutput?: KeysOptions["promptOutput"];
+  platform?: NodeJS.Platform;
 }
 
 const USAGE = `programscape-router ${VERSION}
@@ -24,17 +34,23 @@ Routes web search and scrape calls across your own provider keys, spending the c
 
 Usage:
   programscape-router [mcp]                      Run the MCP server on stdio (default)
+  programscape-router check [--json] [--verbose] One live search, scrape and balance read per key set
+  programscape-router keys set <provider> [--stdin]  Store a key in the OS keychain, asked for at a hidden prompt
+  programscape-router keys list [--json]         Which keys are set and where from (never the keys)
+  programscape-router keys remove <provider>     Delete a stored key from the OS keychain
   programscape-router status [--json] [--refresh]
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
-  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan
+  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan (disconnect first to reconnect)
   programscape-router sync [--json]              Send live balances to your plan now
-  programscape-router disconnect                 Revoke the connection and delete the token file
+  programscape-router disconnect                 Revoke the connection and remove local tokens
   programscape-router --help | --version
 
-Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY.
+Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY,
+or, when a variable isn't set, from the OS keychain (see keys set). A variable wins over the keychain.
+Providers: exa, firecrawl, keenable, parallel, tavily.
 Find startup credits for these tools at https://programscape.com
-Nothing is sent to Programscape unless you run connect, and then only balance numbers.
+Nothing goes to Programscape unless you run connect; then only sign-in, a read of your plan, and balance numbers.
 `;
 
 function formatRouting(routing: Routing): string {
@@ -71,7 +87,15 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
       ...(noBrowser ? { openBrowser: false as const } : options.openBrowser !== undefined ? { openBrowser: options.openBrowser } : {}),
       ...(options.connectWaitMs !== undefined ? { waitMs: options.connectWaitMs } : {}),
     });
-    io.stdout(`Connected to Programscape. Token stored at ${result.tokenPath} (readable only by you).\n`);
+    io.stdout(
+      result.stored.kind === "keychain"
+        ? `Connected to Programscape. The sign-in token is stored in ${result.stored.label}.\n`
+        : `Connected to Programscape. The sign-in token is stored at ${result.stored.path} (${
+            process.platform === "win32"
+              ? "the keychain could not store it; the file is protected by your Windows profile folder's default permissions"
+              : "the keychain could not store it; the file is readable only by you"
+          }).\n`,
+    );
     const config = options.config ?? loadConfig(env, options.cwd).config;
     io.stdout(
       config.programscape?.sync === "auto"
@@ -88,6 +112,8 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
   }
 }
 
+const KEYED_COMMANDS = new Set(["mcp", "status", "search", "scrape", "sync"]);
+
 /** Runs one CLI command. Returns the exit code; "mcp" resolves once the server is connected. */
 export async function main(argv: string[], io: CliIo, options: CliOptions = {}): Promise<number> {
   const args = [...argv];
@@ -102,23 +128,92 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     return 0;
   }
 
+  const env = options.env ?? process.env;
+  const keychainOptions = {
+    env,
+    ...(options.keyringLoader ? { loader: options.keyringLoader } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  };
+
+  if (command === "keys") {
+    return runKeys(args, io, {
+      env,
+      ...(options.stdin ? { stdin: options.stdin } : {}),
+      ...(options.promptOutput ? { promptOutput: options.promptOutput } : {}),
+      ...(options.keyringLoader ? { keyringLoader: options.keyringLoader } : {}),
+      ...(options.platform ? { platform: options.platform } : {}),
+    });
+  }
+
+  if (command === "check") {
+    // Calls each adapter directly: no config, no routing, no ledger, no Programscape.
+    const json = takeFlag(args, "--json");
+    const verbose = takeFlag(args, "--verbose");
+    const report = await runCheck({
+      env,
+      verbose,
+      keys: options.keys ?? (await resolveKeys(keychainOptions)),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(options.now ? { now: options.now } : {}),
+    });
+    io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : `${formatCheck(report)}\n`);
+    return report.ok ? 0 : 1;
+  }
+
   if (command === "disconnect") {
-    const result = await disconnect({ env: options.env ?? process.env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
-    if (!result.wasConnected) io.stdout("Programscape sync was not connected. Nothing to do.\n");
-    else if (result.revoked) io.stdout("Disconnected: Programscape revoked the router's access and the token file is deleted.\n");
-    else io.stdout("Disconnected: the token file is deleted. Programscape could not confirm the revocation; you can also remove the router's access on programscape.com.\n");
+    const result = await disconnect({ env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
+    const { local } = result;
+    if (result.outcome === "nothing-to-do") {
+      io.stdout("Programscape sync was not connected. Nothing to do.\n");
+      return 0;
+    }
+    const words = { deleted: "deleted", absent: "none there", failed: "COULD NOT DELETE", unavailable: "COULD NOT CHECK" } as const;
+    io.stdout(
+      [
+        "Disconnect from Programscape:",
+        `  Programscape: ${result.outcome === "disconnected" ? "revoked the known router tokens" : "remote access not fully verified"}`,
+        `  OS keychain: ${words[local.keychain]}`,
+        `  token file: ${words[local.file]}`,
+        "",
+      ].join("\n"),
+    );
+    if (result.outcome === "local-incomplete") {
+      io.stderr(`Could not verify local token removal. Unlock or repair the reported store, then rerun \`programscape-router disconnect\`:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+      io.stderr("Check Apps connected to your plan on programscape.com (My plans) for any router access as well.\n");
+      return 1;
+    }
+    if (result.outcome === "remote-unverified") {
+      io.stdout("Local connection cleared; remote access was not verified. You can connect again.\n");
+      io.stderr("Check Apps connected to your plan on programscape.com (My plans) and remove programscape-router if it is listed.\n");
+      return 2;
+    }
+    io.stdout("Disconnected: local tokens removed and known Programscape tokens revoked.\n");
     return 0;
   }
 
-  const { openBrowser: _openBrowser, connectWaitMs: _connectWaitMs, ...routerOptions } = options;
+  const {
+    openBrowser: _openBrowser,
+    connectWaitMs: _connectWaitMs,
+    keyringLoader: _keyringLoader,
+    stdin: _stdin,
+    promptOutput: _promptOutput,
+    platform: _platform,
+    ...routerOptions
+  } = options;
   let router: Router;
   try {
     if (command === "connect") {
       // Validate the config before starting a sign-in.
-      if (!options.config) loadConfig(options.env ?? process.env, options.cwd);
+      if (!options.config) loadConfig(env, options.cwd);
       return await runConnect(args, io, options);
     }
-    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions });
+    if (!KEYED_COMMANDS.has(command)) {
+      io.stderr(`Unknown command "${command}".\n\n${USAGE}`);
+      return 2;
+    }
+    // Keys are read once, at startup: each environment variable, or the OS keychain where one isn't set.
+    const keys = options.keys ?? (await resolveKeys(keychainOptions));
+    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions, keys });
   } catch (error) {
     if (error instanceof ConfigError) {
       io.stderr(`${error.message}\n`);

@@ -1,12 +1,14 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { KEYCHAIN_SERVICE, resolveKeys } from "../src/keys.js";
 import { sanitizeLedger } from "../src/ledger.js";
 import { connect } from "../src/programscape/connect.js";
 import { createRouter } from "../src/router.js";
 import { URLS, fixture, mockFetch, ok, status, type Responder } from "./helpers.js";
 import { ORIGIN, combine, fakeProgramscape } from "./programscape-fake.js";
+import { fakeKeyring } from "./fake-keyring.js";
 
 const KEYS = {
   EXA_API_KEY: "exa-SECRET-1111",
@@ -33,7 +35,20 @@ function echo(code: number): Responder {
     });
 }
 
-describe("privacy", () => {
+// Every privacy rule holds whether a key came from the environment or from the OS keychain.
+describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) => {
+  /** The environment for this run: the keys themselves only when they come from the environment. */
+  const keyEnv = (extra: Record<string, string> = {}) => ({ ...(source === "env" ? KEYS : {}), ...extra });
+  beforeEach(() => {
+    if (source === "keychain") for (const [name, key] of Object.entries(KEYS)) fakeKeyring.put(KEYCHAIN_SERVICE, name, key);
+  });
+  async function keyed(extra: Record<string, string> = {}) {
+    const env = keyEnv(extra);
+    const keys = await resolveKeys({ env });
+    expect(Object.values(keys.sources)).toEqual(Array(5).fill(source));
+    return { env, keys };
+  }
+
   it("never writes keys, queries, URLs or content to the ledger or the log", async () => {
     const dir = mkdtempSync(join(tmpdir(), "psr-ledger-"));
     const ledgerPath = join(dir, "ledger.json");
@@ -52,7 +67,7 @@ describe("privacy", () => {
       [URLS.parallelExtract]: echo(402),
       [URLS.tavilyExtract]: ok({ results: [{ url: PAGE, raw_content: "secret board minutes zebra" }] }),
     });
-    const router = createRouter({ env: KEYS, config: {}, fetch, ledgerPath, log: (m) => logs.push(m) });
+    const router = createRouter({ ...(await keyed()), config: {}, fetch, ledgerPath, log: (m) => logs.push(m) });
 
     const search = await router.search({ query: QUERY });
     expect(search.routing.provider).toBe("tavily");
@@ -97,7 +112,7 @@ describe("privacy", () => {
       [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
       [URLS.tavilySearch]: status(503),
     });
-    const router = createRouter({ env: KEYS, config: {}, fetch, ledgerPath: false, log: () => {} });
+    const router = createRouter({ ...(await keyed()), config: {}, fetch, ledgerPath: false, log: () => {} });
     await router.search({ query: QUERY }).catch(() => undefined);
     await router.status({ refresh: true });
 
@@ -130,7 +145,7 @@ describe("privacy", () => {
 
   it("sends Programscape only balance numbers: no query, URL or key, and its token goes nowhere else", async () => {
     const root = mkdtempSync(join(tmpdir(), "psr-privacy-sync-"));
-    const env = { ...KEYS, XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") };
+    const { env, keys } = await keyed({ XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") });
     const fake = fakeProgramscape({
       kept: [
         { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
@@ -158,7 +173,7 @@ describe("privacy", () => {
       programscape: { sync: "auto" as const },
       providers: { exa: { credits: [{ label: "Exa grant", remaining: 600, unit: "usd" }] } },
     };
-    const router = createRouter({ env, config, fetch, ledgerPath: false, log: (m) => logs.push(m) });
+    const router = createRouter({ env, keys, config, fetch, ledgerPath: false, log: (m) => logs.push(m) });
 
     await router.search({ query: QUERY });
     await router.scrape({ url: PAGE });

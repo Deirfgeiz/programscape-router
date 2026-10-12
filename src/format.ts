@@ -44,6 +44,7 @@ export function formatSync(sync: ProgramscapeSyncStatus): string[] {
   return lines;
 }
 
+/** The human-readable status report that `programscape-router status` prints. */
 export function formatStatus(status: RouterStatus): string {
   const lines: string[] = [
     `programscape-router status at ${status.asOf}`,
@@ -53,13 +54,16 @@ export function formatStatus(status: RouterStatus): string {
     "Providers",
   ];
   for (const provider of status.providers) {
-    const state = provider.enabled ? `key set (${provider.keyEnvVar})` : `no key (set ${provider.keyEnvVar})`;
+    const state = provider.enabled
+      ? `key set (${provider.keyEnvVar}, from ${provider.keySource === "keychain" ? "the OS keychain" : "the environment"})`
+      : `no key (set ${provider.keyEnvVar}, or run \`programscape-router keys set ${provider.id}\`)`;
     lines.push(`  ${provider.id}: ${state}; ${provider.capabilities.join(", ")}${provider.paid !== undefined ? `; paid: ${provider.paid}` : ""}`);
     if (provider.disabled) lines.push(`    disabled: ${provider.disabled}`);
     if (provider.exhausted) lines.push(`    credits spent: ${provider.exhausted.reason}${provider.exhausted.until ? ` Until ${provider.exhausted.until}.` : ""}`);
     for (const balance of provider.balances) lines.push(`    - ${formatBalance(balance)}`);
     if (provider.balanceNote) lines.push(`    ${provider.balanceNote}`);
   }
+  if (status.keychainNote) lines.push(`  Keychain: ${status.keychainNote}`);
   lines.push("", ...formatOrder(status.order.search), "", ...formatOrder(status.order.scrape), "");
   lines.push(...formatSync(status.programscape), "");
   lines.push("Each balance is shown on its own, in its own unit. Balances are never added together.");

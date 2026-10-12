@@ -20,6 +20,7 @@ function fail(error: unknown): ToolResult {
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "internal", message: "Unexpected error" }) }] };
 }
 
+/** An MCP server with the search, scrape and credits_status tools, backed by `router`. Not yet connected. */
 export function createMcpServer(router: Router): McpServer {
   const server = new McpServer({ name: "programscape-router", version: VERSION });
 
@@ -95,6 +96,7 @@ export function createMcpServer(router: Router): McpServer {
   return server;
 }
 
+/** Creates the MCP server and connects it to stdio. Resolves once connected; the process then stays up. */
 export async function runMcpServer(router: Router): Promise<void> {
   const server = createMcpServer(router);
   await server.connect(new StdioServerTransport());

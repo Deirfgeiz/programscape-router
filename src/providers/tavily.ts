@@ -1,7 +1,7 @@
 /**
  * Tavily adapter.
  *
- * Official docs (read 2026-10-11):
+ * Official docs (re-read 2026-10-11 for 1.0):
  * - Search:  https://docs.tavily.com/documentation/api-reference/endpoint/search   (POST https://api.tavily.com/search)
  * - Extract: https://docs.tavily.com/documentation/api-reference/endpoint/extract  (POST https://api.tavily.com/extract)
  * - Usage:   https://docs.tavily.com/documentation/api-reference/endpoint/usage    (GET  https://api.tavily.com/usage)

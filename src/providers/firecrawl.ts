@@ -1,7 +1,7 @@
 /**
  * Firecrawl adapter (API v2).
  *
- * Official docs (read 2026-10-11):
+ * Official docs (re-read 2026-10-11 for 1.0):
  * - Search:       https://docs.firecrawl.dev/api-reference/endpoint/search        (POST https://api.firecrawl.dev/v2/search)
  * - Scrape:       https://docs.firecrawl.dev/api-reference/endpoint/scrape        (POST https://api.firecrawl.dev/v2/scrape)
  * - Credit usage: https://docs.firecrawl.dev/api-reference/endpoint/credit-usage  (GET  https://api.firecrawl.dev/v2/team/credit-usage)
@@ -30,6 +30,10 @@ function classify(status: number, body: unknown): Exclude<Outcome, "ok"> | undef
   return status === 402 ? "exhausted" : undefined;
 }
 
+function errorCode(body: unknown): string | undefined {
+  return isRecord(body) ? str(body.code) : undefined;
+}
+
 function headers(ctx: CallContext): Record<string, string> {
   return { authorization: `Bearer ${ctx.key}` };
 }
@@ -52,6 +56,8 @@ export const firecrawl: ProviderAdapter = {
     "https://docs.firecrawl.dev/api-reference/endpoint/scrape",
     "https://docs.firecrawl.dev/api-reference/endpoint/credit-usage",
   ],
+  // The one code the API reference documents in an error body (402 on /v2/scrape).
+  errorCodes: ["insufficient_credits"],
   balanceTtlMs: 5 * 60_000,
 
   async search(req, ctx) {
@@ -59,6 +65,7 @@ export const firecrawl: ProviderAdapter = {
       headers: headers(ctx),
       body: { query: req.query, limit: clampResults(req.maxResults, 100), sources: [{ type: "web" }] },
       classify,
+      errorCode,
     });
     const data = unwrap(body, "search");
     return asArray(data.web).flatMap((item) => {
@@ -75,6 +82,7 @@ export const firecrawl: ProviderAdapter = {
       headers: headers(ctx),
       body: { url: req.url, formats: ["markdown"], onlyMainContent: true },
       classify,
+      errorCode,
     });
     const data = unwrap(body, "scrape");
     const markdown = typeof data.markdown === "string" ? data.markdown : undefined;
@@ -90,7 +98,7 @@ export const firecrawl: ProviderAdapter = {
 
   async balance(ctx) {
     const asOf = new Date().toISOString();
-    const body = await requestJson(ctx, `${BASE}/team/credit-usage`, { headers: headers(ctx), classify });
+    const body = await requestJson(ctx, `${BASE}/team/credit-usage`, { headers: headers(ctx), classify, errorCode });
     const data = unwrap(body, "credit usage");
     const remaining = num(data.remainingCredits);
     const total = num(data.planCredits);
