@@ -122,13 +122,16 @@ export async function use(): Promise<void> {
   const cliPath = join(app, "node_modules", "programscape-router", "dist", "cli.js");
   const home = join(work, "home");
   mkdirSync(home);
+  // A throwaway home keeps the run away from the developer's own config and ledger. The keychain round trip keeps
+  // the real one: macOS finds the login keychain through HOME. XDG_* still keep files out of it.
+  const homes =
+    mode === "keychain"
+      ? Object.fromEntries(["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"].filter((name) => process.env[name]).map((name) => [name, process.env[name]]))
+      : { HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local") };
   const baseEnv = {
     PATH: process.env.PATH ?? "",
     SystemRoot: process.env.SystemRoot ?? "",
-    HOME: home,
-    USERPROFILE: home,
-    APPDATA: join(home, "AppData", "Roaming"),
-    LOCALAPPDATA: join(home, "AppData", "Local"),
+    ...homes,
     XDG_CONFIG_HOME: join(home, "config"),
     XDG_STATE_HOME: join(home, "state"),
     PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: TEST_SERVICE,

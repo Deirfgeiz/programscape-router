@@ -95,7 +95,8 @@ function unavailable(platform: NodeJS.Platform, error: unknown, secret?: string)
       `No keychain is available here: on Linux the router stores keys in the Secret Service (GNOME Keyring or KWallet), and none answered (${reason}). ${ALTERNATIVES}`,
     );
   }
-  return new KeychainUnavailableError(`${storeLabel(platform)} could not be used (${reason}). ${ALTERNATIVES}`);
+  const label = storeLabel(platform);
+  return new KeychainUnavailableError(`${label.charAt(0).toUpperCase()}${label.slice(1)} could not be used (${reason}). ${ALTERNATIVES}`);
 }
 
 export interface KeychainOptions {

@@ -89,5 +89,6 @@ export async function readFirstLine(input: AsyncIterable<string | Buffer>): Prom
     text += String(chunk);
     if (/[\r\n]/.test(text)) break;
   }
-  return text.split(/\r?\n/)[0] ?? "";
+  // A byte-order mark can lead text piped from some Windows shells.
+  return (text.replace(/^\uFEFF/, "").split(/\r?\n/)[0] ?? "");
 }

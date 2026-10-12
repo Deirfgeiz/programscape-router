@@ -70,6 +70,7 @@ describe("hidden prompt", () => {
     expect(await readFirstLine(Readable.from(["tvly-abc\n", "more\n"]))).toBe("tvly-abc");
     expect(await readFirstLine(Readable.from(["tvly-abc\r\n"]))).toBe("tvly-abc");
     expect(await readFirstLine(Readable.from(["tvly-", "abc"]))).toBe("tvly-abc");
+    expect(await readFirstLine(Readable.from(["\uFEFFtvly-abc\r\n"]))).toBe("tvly-abc");
   });
 });
 

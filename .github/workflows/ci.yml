@@ -52,3 +52,33 @@ jobs:
       # Packs the tarball, installs it into a fresh project, imports it as ESM, type-checks its .d.ts files
       # as a consumer would, runs the bin, and exercises the keychain (or its absence).
       - run: npm run smoke:pack -- ${{ matrix.mode }}
+      - name: Pipe a key in from PowerShell and cmd (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: programscape-router-ci
+        run: |
+          # PowerShell pipes add CRLF; keys set --stdin must take the first line only.
+          'exa-from-pwsh' | node dist/cli.js keys set exa --stdin
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $list = node dist/cli.js keys list --json | ConvertFrom-Json
+          if (($list.keys | Where-Object provider -eq 'exa').source -ne 'keychain') { exit 1 }
+          cmd /c "echo exa-from-cmd| node dist\cli.js keys set exa --stdin"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node dist/cli.js keys remove exa
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Check the README's PowerShell prompts (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion
+          if (-not (Get-Command Read-Host).Parameters.ContainsKey('AsSecureString')) { exit 1 }
+          $s = ConvertTo-SecureString 'tvly-check' -AsPlainText -Force
+          $env:TAVILY_API_KEY = [System.Net.NetworkCredential]::new('', $s).Password
+          if ($env:TAVILY_API_KEY -ne 'tvly-check') { exit 1 }
+      - name: Check the README's PowerShell prompts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $PSVersionTable.PSVersion
+          if (-not (Get-Command Read-Host).Parameters.ContainsKey('MaskInput')) { exit 1 }
