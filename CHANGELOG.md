@@ -4,13 +4,18 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
-## 1.2.0 (unreleased)
+## 1.1.0 (October 12, 2026)
+
+Two new providers, Linkup and You.com, and "extend before they end": a runway estimate, a heads-up while there's
+still time, and the programs that can add more.
+
+### Extend before they end
 
 Programscape decision 0151, "extend before they end": warn while there's time, and show what can add more. The site
-side (the catalog endpoint, `my_plan` dates and the estimate on the plan) is founder-ecosystem#541; until it is live,
-the catalog read fails quietly and the router works as before.
+side (the catalog endpoint, `my_plan` dates and the estimate on the plan) is founder-ecosystem#541, live on
+programscape.com. If the catalog can't be reached, the read fails quietly and the router works as before.
 
-### Added
+#### Added
 
 - **Balance readings.** Every live balance read (Firecrawl, Linkup, Tavily, You.com) is kept in `readings.json` beside
   the ledger: provider, balance label, unit, remaining, total if known, and when it was read. Nothing else. 90 days are
@@ -49,7 +54,7 @@ the catalog read fails quietly and the router works as before.
   `headsUp`, `headsUpDays` and `programs`; `ProviderStatus` gains `runway`; `CheckReport` gains `programs` and
   `CheckProvider` gains `runway`.
 
-### Changed
+#### Changed
 
 - The privacy promise: without `connect`, the router's one call to Programscape is the catalog read above (it used to
   make none). The README says exactly what it sends, how often, and how to turn it off.
@@ -59,12 +64,12 @@ the catalog read fails quietly and the router works as before.
 - `Balance.source` may be `"plan"`. Code that switches exhaustively over it needs the new case.
 - `sync` messages say when the plan's date now orders a provider, or that the config date wins.
 
-## 1.1.0 (unreleased)
+### Linkup and You.com
 
 Two new providers, each built from its official API docs (read October 12, 2026; linked at the top of each adapter).
 Not yet run against the live APIs with real keys: `programscape-router check` does that.
 
-### Added
+#### Added
 
 - **Linkup** (`linkup`, key `LINKUP_API_KEY`): search through `POST /v1/search` (`depth: "fast"`,
   `outputType: "searchResults"`; image results are dropped), scrape through `POST /v1/fetch` (standard mode, no
@@ -86,7 +91,7 @@ Not yet run against the live APIs with real keys: `programscape-router check` do
   `YDC_API_KEY`. `check`, `status`, the MCP tools and the opt-in balance sync cover both providers. A dollar balance
   with a fraction of a cent isn't synced (Programscape records dollars to the cent, and the router never rounds).
 
-### Changed
+#### Changed
 
 - `PROVIDER_IDS` and the `ProviderId` type now include `linkup` and `youcom` (seven providers, alphabetically). Code
   that switches exhaustively over `ProviderId` needs the two new cases.
