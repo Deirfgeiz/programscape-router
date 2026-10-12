@@ -43,7 +43,7 @@ Usage:
   programscape-router scrape <url> [--json]
   programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan
   programscape-router sync [--json]              Send live balances to your plan now
-  programscape-router disconnect                 Revoke the connection and delete the token file
+  programscape-router disconnect                 Revoke the connection and remove local tokens
   programscape-router --help | --version
 
 Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY,
@@ -163,11 +163,11 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   if (command === "disconnect") {
     const result = await disconnect({ env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
     const { local } = result;
-    if (!result.wasConnected && local.gone) {
+    if (!result.wasConnected && result.tokenReadVerified && local.gone) {
       io.stdout("Programscape sync was not connected. Nothing to do.\n");
       return 0;
     }
-    const words = { deleted: "deleted", absent: "none there", failed: "COULD NOT DELETE", unavailable: "no keychain here" } as const;
+    const words = { deleted: "deleted", absent: "none there", failed: "COULD NOT DELETE", unavailable: "COULD NOT CHECK" } as const;
     io.stdout(
       [
         "Disconnect from Programscape:",
@@ -178,12 +178,15 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
       ].join("\n"),
     );
     if (!local.gone) {
-      io.stderr(`A sign-in token is still stored on this machine. Remove it by hand:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+      io.stderr(`Could not verify that every local sign-in token was removed. Check these stores and remove any remaining entry by hand:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
     }
-    if (!result.revoked && result.wasConnected) {
-      io.stderr("Programscape did not confirm the revocation: remove the router's access on programscape.com as well.\n");
+    if (!result.automaticSyncDisabled) {
+      io.stderr("Could not turn off automatic balance sync in local state. Stop any running router and remove its local sign-in tokens.\n");
     }
-    if (local.gone && (result.revoked || !result.wasConnected)) {
+    if (!result.revoked && (result.wasConnected || !result.tokenReadVerified || !local.gone)) {
+      io.stderr("Programscape did not confirm the revocation: check and remove the router's access on programscape.com as well.\n");
+    }
+    if (result.tokenReadVerified && local.gone && (result.revoked || !result.wasConnected)) {
       io.stdout("Disconnected: no token is left on this machine, and Programscape revoked it.\n");
       return 0;
     }

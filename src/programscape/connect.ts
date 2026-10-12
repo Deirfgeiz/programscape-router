@@ -5,7 +5,7 @@
  * client for exactly that redirect URI, open the browser at the authorization URL (and print it, for headless use),
  * take the code from the loopback redirect, exchange it with the PKCE verifier, and store the tokens with mode 600.
  *
- * disconnect: revoke the tokens at the revocation endpoint from the metadata and delete the token file.
+ * disconnect: stop sync, revoke every readable local token pair and remove both keychain and file copies.
  */
 import { spawn } from "node:child_process";
 import { type Server, createServer } from "node:http";
@@ -28,9 +28,9 @@ import {
   deleteClientCache,
   deleteSyncState,
   deleteTokenFile,
+  inspectTokenFile,
   readClientCache,
   readSyncState,
-  readTokenFile,
   type TokenDeletion,
   type TokenLocation,
   writeClientCache,
@@ -230,6 +230,10 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
 
 export interface DisconnectResult {
   wasConnected: boolean;
+  /** Whether the token store was readable before deletion, so an unseen grant can be ruled out. */
+  tokenReadVerified: boolean;
+  /** Whether a later router process is prevented from syncing balances with a token left behind. */
+  automaticSyncDisabled: boolean;
   /** True when Programscape confirmed the revocation; false when it could not be reached or has no endpoint. */
   revoked: boolean;
   /** What happened to the local copies, read back afterwards. */
@@ -238,23 +242,35 @@ export interface DisconnectResult {
 
 export async function disconnect(options: { env: NodeJS.ProcessEnv; fetch: FetchLike }): Promise<DisconnectResult> {
   const { env } = options;
-  const tokens = await readTokenFile(env);
+  // Stop future automatic sync before attempting revocation or deletion. A failed disconnect keeps this marker;
+  // only a new, successful connect clears it.
+  const syncState = await readSyncState(env);
+  syncState.off = { since: new Date().toISOString(), reason: "Programscape sync is off because disconnect was requested. Run `programscape-router connect` to turn it on again." };
+  const offSaved = await writeSyncState(env, syncState).then(() => true, () => false);
+  const inspected = await inspectTokenFile(env);
   let revoked = false;
-  if (tokens) {
+  if (inspected.copies.length > 0) {
     try {
       const fetch = programscapeFetch(options.fetch, REQUEST_TIMEOUT_MS);
       const metadata = await discover(fetch);
-      // Revoking the refresh token ends the grant; the access token is revoked too, so neither outlives this.
-      const results = await Promise.all([
-        tokens.refreshToken ? revoke(fetch, metadata, { clientId: tokens.clientId, token: tokens.refreshToken, hint: "refresh_token" }) : Promise.resolve(true),
+      // A failed fallback cleanup can leave two different grants in the two stores. Revoke both.
+      const results = await Promise.all(inspected.copies.flatMap((tokens) => [
+        ...(tokens.refreshToken ? [revoke(fetch, metadata, { clientId: tokens.clientId, token: tokens.refreshToken, hint: "refresh_token" })] : []),
         revoke(fetch, metadata, { clientId: tokens.clientId, token: tokens.accessToken, hint: "access_token" }),
-      ]);
+      ]));
       revoked = results.every(Boolean);
     } catch {
       revoked = false;
     }
   }
   const local = await deleteTokenFile(env);
-  await deleteSyncState(env);
-  return { wasConnected: Boolean(tokens), revoked, local };
+  const complete = inspected.readVerified && local.gone && (revoked || inspected.copies.length === 0);
+  if (complete) await deleteSyncState(env).catch(() => undefined);
+  return {
+    wasConnected: inspected.copies.length > 0,
+    tokenReadVerified: inspected.readVerified,
+    automaticSyncDisabled: offSaved || local.gone,
+    revoked,
+    local,
+  };
 }

@@ -66,7 +66,7 @@ export class Connection {
     const { env, now } = this.options;
     const stored = await readTokenFile(env);
     if (!stored) throw new ProgramscapeError("rejected", "Programscape sync is not connected. Run `programscape-router connect`.");
-    // Another process may have rotated the tokens since this one read them: the file is the truth.
+    // Another process may have rotated the tokens: reread the authoritative file, or the keychain if there is no file.
     this.tokens = stored;
     const endsAt = stored.expiresAt ? Date.parse(stored.expiresAt) : Number.NaN;
     const fresh = Number.isNaN(endsAt) || endsAt - now().getTime() > REFRESH_MARGIN_MS;

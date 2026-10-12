@@ -236,10 +236,16 @@ claude mcp add programscape-router -s user -- cmd /c npx -y programscape-router
 With 1Password instead of the keychain, run the router through `op run`. Use the full path to your `keys.env`;
 1Password asks you to approve when Claude Code starts the router.
 
-macOS and Linux (`~` isn't expanded here):
+macOS (`~` isn't expanded here):
 
 ```bash
 claude mcp add programscape-router -s user -- op run --env-file=/Users/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
+```
+
+Linux (`~` isn't expanded here):
+
+```bash
+claude mcp add programscape-router -s user -- op run --env-file=/home/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
 ```
 
 Windows:
@@ -284,8 +290,9 @@ On Windows, if the client says it can't start `npx`, start it through `cmd`:
 }
 ```
 
-With 1Password, run it through `op run`. On Windows, use your Windows path to `keys.env`, with each backslash
-doubled in JSON: `"--env-file=C:\\\\Users\\\\YOU\\\\AppData\\\\Roaming\\\\programscape-router\\\\keys.env"`.
+With 1Password, run it through `op run`. Use the path for your OS:
+
+macOS:
 
 ```json
 {
@@ -293,6 +300,32 @@ doubled in JSON: `"--env-file=C:\\\\Users\\\\YOU\\\\AppData\\\\Roaming\\\\progra
     "programscape-router": {
       "command": "op",
       "args": ["run", "--env-file=/Users/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
+    }
+  }
+}
+```
+
+Linux:
+
+```json
+{
+  "mcpServers": {
+    "programscape-router": {
+      "command": "op",
+      "args": ["run", "--env-file=/home/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
+    }
+  }
+}
+```
+
+Windows (JSON requires each path backslash to be doubled):
+
+```json
+{
+  "mcpServers": {
+    "programscape-router": {
+      "command": "op",
+      "args": ["run", "--env-file=C:\\Users\\YOU\\AppData\\Roaming\\programscape-router\\keys.env", "--", "npx", "-y", "programscape-router"]
     }
   }
 }
@@ -459,15 +492,16 @@ and `connect` names it:
   protected only by your profile folder's default permissions, which let your account, administrators and the
   system read it.
 
-Every save is numbered, and the router always uses the newest copy. When it falls back to the file, it deletes the
-older keychain copy; when the keychain works again, it deletes the file. So a token Programscape has already replaced
-is never used again, even if one store briefly can't be written.
+While a fallback file exists, the router reads that copy. It tries to delete the old keychain entry after a fallback
+write. When the keychain works again, it updates the fallback file before saving there and then deletes the file.
+This keeps a rotated token current even if a keychain read or write fails.
 
 If Programscape stops accepting the tokens (for example after 30 days without use, or if you remove the router's
 access on programscape.com), sync turns itself off and says to run `connect` again.
 
-`disconnect` asks Programscape to revoke both tokens, deletes them from the keychain and the file, then reads both
-back. It prints what happened in each place:
+`disconnect` blocks later automatic balance sync attempts when it can save local state; a call already in progress may
+finish. It asks Programscape to revoke every readable token pair in the keychain and file, deletes the local copies,
+then reads both stores back. It prints what happened in each place:
 
 ```text
 Disconnect from Programscape:
@@ -477,8 +511,10 @@ Disconnect from Programscape:
 Disconnected: no token is left on this machine, and Programscape revoked it.
 ```
 
-It exits 0 only when the tokens are revoked and gone from both stores. Otherwise it exits 1 and says what is left and
-how to remove it by hand:
+It exits 0 only when the tokens are revoked and both stores are verified empty. If the keychain cannot be opened or
+checked, it exits 1 and gives manual checks; it cannot tell whether an entry is present. It also exits 1 when removal
+or remote revocation fails. A saved off state stays in place after a failed disconnect until you run `connect` again;
+if it cannot save that state while a token remains, the CLI warns you:
 
 - macOS: in Keychain Access, delete the item `programscape-router` with account `programscape-token`, or run
   `security delete-generic-password -s programscape-router -a programscape-token`.

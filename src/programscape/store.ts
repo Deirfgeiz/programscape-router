@@ -38,7 +38,7 @@ export interface TokenFile {
   /** ISO time the access token stops working. */
   expiresAt?: string;
   connectedAt: string;
-  /** One higher on every save, across the keychain and the file, so the newest copy always wins. */
+  /** Save counter for diagnostics. It may lag a keychain copy that could not be read. */
   seq?: number;
   /** When this copy was saved. */
   savedAt?: string;
@@ -147,61 +147,98 @@ async function tokenKeychain(): Promise<Keychain | undefined> {
   }
 }
 
-/** Each store's copy. A store that can't be read counts as holding nothing. */
-async function readBoth(env: NodeJS.ProcessEnv, keychain: Keychain | undefined): Promise<{ keychain?: TokenFile; file?: TokenFile }> {
+/** Read each store separately, preserving whether the keychain was actually checked. */
+async function readBoth(env: NodeJS.ProcessEnv, keychain: Keychain | undefined): Promise<{
+  keychain?: TokenFile;
+  keychainReadable: boolean;
+  keychainPresent: boolean;
+  file?: TokenFile;
+}> {
   let fromKeychain: TokenFile | undefined;
+  let keychainReadable = false;
+  let keychainPresent = false;
   if (keychain) {
     try {
       const stored = await keychain.get(TOKEN_KEYCHAIN_ACCOUNT);
+      keychainReadable = true;
+      keychainPresent = stored !== null;
       if (stored) fromKeychain = parseTokens(JSON.parse(stored));
     } catch {
       // Unreadable keychain or entry.
     }
   }
   const fromFile = parseTokens(await readJson(tokenPath(env)));
-  return { ...(fromKeychain ? { keychain: fromKeychain } : {}), ...(fromFile ? { file: fromFile } : {}) };
-}
-
-/** The newer of two copies, by the sequence number every save increments. */
-function newest(a: TokenFile | undefined, b: TokenFile | undefined): TokenFile | undefined {
-  if (!a) return b;
-  if (!b) return a;
-  return (b.seq ?? 0) > (a.seq ?? 0) ? b : a;
+  return { keychainReadable, keychainPresent, ...(fromKeychain ? { keychain: fromKeychain } : {}), ...(fromFile ? { file: fromFile } : {}) };
 }
 
 /**
- * The stored tokens: the newest copy across the OS keychain and the token file. Every save carries a sequence number
- * one higher than any copy before it, so a stale copy left behind in either store can never win.
+ * A fallback file is authoritative while it exists. A keychain read may fail during rotation, leaving an older
+ * keychain entry with a higher sequence number than the new file; comparing those numbers would reuse old tokens.
  */
-export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile | undefined> {
+export async function inspectTokenFile(env: NodeJS.ProcessEnv): Promise<{ tokens?: TokenFile; copies: TokenFile[]; readVerified: boolean }> {
   const both = await readBoth(env, await tokenKeychain());
-  return newest(both.keychain, both.file);
+  const filePresent = existsSync(tokenPath(env));
+  const copies = both.file ? [both.file] : [];
+  if (
+    both.keychain &&
+    (!both.file ||
+      both.keychain.accessToken !== both.file.accessToken ||
+      both.keychain.refreshToken !== both.file.refreshToken ||
+      both.keychain.clientId !== both.file.clientId)
+  ) copies.push(both.keychain);
+  const readVerified = both.keychainReadable && (!both.keychainPresent || Boolean(both.keychain)) && (!filePresent || Boolean(both.file));
+  // If the authoritative file exists but cannot be parsed, never fall through to an older keychain copy.
+  if (filePresent) return { ...(both.file ? { tokens: both.file } : {}), copies, readVerified };
+  return { ...(both.keychain ? { tokens: both.keychain } : {}), copies, readVerified };
+}
+
+export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile | undefined> {
+  return (await inspectTokenFile(env)).tokens;
 }
 
 /**
  * Stores the tokens in the OS keychain (the same store as provider keys) and deletes any token file. Where the
  * keychain is unavailable or refuses the entry, writes the token file instead (mode 600 in a mode 700 folder on
  * macOS and Linux; on Windows, %LOCALAPPDATA%, protected only by the profile folder's default permissions) and then
- * tries to delete the stale keychain copy. Either way the new copy carries the highest sequence number, so it is the
- * one read back even if a stale copy could not be deleted.
+ * tries to delete the stale keychain copy. If a fallback file already exists, updates it before trying the keychain
+ * so a failed write or file cleanup cannot make an older token authoritative again.
  */
 export async function writeTokenFile(env: NodeJS.ProcessEnv, tokens: Omit<TokenFile, "seq" | "savedAt">): Promise<TokenLocation> {
   const keychain = await tokenKeychain();
   const both = await readBoth(env, keychain);
   const seq = Math.max(both.keychain?.seq ?? 0, both.file?.seq ?? 0) + 1;
   const record: TokenFile = { ...tokens, seq, savedAt: new Date().toISOString() };
-  if (keychain) {
+  const path = tokenPath(env);
+  // Never overwrite or delete an entry whose old grant could not be read; keep it available for disconnect.
+  const safeToWriteKeychain = Boolean(keychain && both.keychainReadable && (!both.keychainPresent || both.keychain));
+  if (existsSync(path)) {
+    try {
+      await writeSecureJson(path, record);
+    } catch (fileError) {
+      // A recovered keychain can save the rotation when the old fallback file can no longer be updated.
+      // The old file must then be removed: it would otherwise remain authoritative on the next read.
+      if (!keychain || !safeToWriteKeychain) throw fileError;
+      await keychain.set(TOKEN_KEYCHAIN_ACCOUNT, JSON.stringify(record));
+      await rm(path, { force: true });
+      return { kind: "keychain", label: keychain.label };
+    }
+  }
+  if (keychain && safeToWriteKeychain) {
     try {
       await keychain.set(TOKEN_KEYCHAIN_ACCOUNT, JSON.stringify(record));
-      await rm(tokenPath(env), { force: true }).catch(() => undefined);
-      return { kind: "keychain", label: keychain.label };
+      try {
+        await rm(path, { force: true });
+        return { kind: "keychain", label: keychain.label };
+      } catch {
+        return { kind: "file", path };
+      }
     } catch {
       // For example Windows Credential Manager's size limit, or a locked keychain: use the file instead.
     }
   }
-  await writeSecureJson(tokenPath(env), record);
-  if (keychain && both.keychain) await keychain.remove(TOKEN_KEYCHAIN_ACCOUNT).catch(() => false);
-  return { kind: "file", path: tokenPath(env) };
+  await writeSecureJson(path, record);
+  if (keychain && safeToWriteKeychain) await keychain.remove(TOKEN_KEYCHAIN_ACCOUNT).catch(() => false);
+  return { kind: "file", path };
 }
 
 /** What happened to each store's copy of the tokens on delete. */
@@ -210,7 +247,7 @@ export type DeleteState = "deleted" | "absent" | "failed" | "unavailable";
 export interface TokenDeletion {
   keychain: DeleteState;
   file: DeleteState;
-  /** True when, read back afterwards, no token is left in either store. */
+  /** True only when the keychain was checked and both stores were verified empty. */
   gone: boolean;
   /** How to delete what is left by hand, when something is. */
   manual?: string[];
@@ -238,9 +275,11 @@ export async function deleteTokenFile(env: NodeJS.ProcessEnv): Promise<TokenDele
   }
   const left = await readBoth(env, keychain);
   const manual: string[] = [];
-  if (left.keychain || keychainState === "failed") manual.push(manualRemoval(keychain?.service ?? KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT));
-  if (left.file || existsSync(path)) manual.push(`Delete the file ${path}.`);
-  const gone = !left.keychain && !left.file && keychainState !== "failed" && !existsSync(path);
+  const keychainGone = left.keychainReadable && !left.keychainPresent;
+  const fileGone = fileState !== "failed" && !existsSync(path);
+  if (!keychainGone) manual.push(manualRemoval(keychain?.service ?? KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT));
+  if (!fileGone) manual.push(`Delete the file ${path}.`);
+  const gone = keychainGone && fileGone;
   return { keychain: keychainState, file: fileState, gone, ...(manual.length > 0 ? { manual } : {}) };
 }
 

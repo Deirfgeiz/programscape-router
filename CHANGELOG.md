@@ -28,11 +28,14 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   Where there is no keychain, the router still works with environment variables, and `keys` says why. `status` and
   `check` show each key's source (`env`, `keychain` or none). `resolveKeys()` does the same for library users.
 - The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Only where there
-  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which. Every save carries a
-  sequence number and reads take the newest copy across both stores; a fallback write deletes the older keychain
-  copy, and a later keychain write deletes the file, so a rotated-out refresh token is never reused.
-- `disconnect` reports the remote revocation, the keychain and the token file separately, reads both stores back,
-  and exits 1 unless the tokens are revoked and gone everywhere, naming what is left and how to delete it by hand
+  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which. A fallback file is
+  authoritative while present, including when a keychain read and write both fail during rotation. A later keychain
+  write updates the file first and then deletes it after the keychain save.
+- `disconnect` blocks later automatic sync attempts when local state can be saved (an in-flight call may finish),
+  revokes every readable token pair, reports the remote revocation, the
+  keychain and the token file separately, reads both stores back, and exits 1 unless the tokens are revoked and
+  both stores are verified empty. An inaccessible keychain is reported
+  as unverified, with manual checks; other failures name what is left and how to delete it by hand
   (Keychain Access, Credential Manager or Secret Service entry names, and the matching `security`, `cmdkey` or
   `secret-tool` command).
 - Keychain errors never carry the native library's text: each operation prints a fixed message and a problem class

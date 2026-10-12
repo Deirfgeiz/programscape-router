@@ -495,7 +495,7 @@ describe("disconnect", () => {
   it("revokes both tokens at the revocation endpoint and deletes the file", async () => {
     const { fake, env, fetch } = await connected();
     const result = await disconnect({ env, fetch });
-    expect(result).toEqual({ wasConnected: true, revoked: true, local: { keychain: "deleted", file: "absent", gone: true } });
+    expect(result).toEqual({ wasConnected: true, tokenReadVerified: true, automaticSyncDisabled: true, revoked: true, local: { keychain: "deleted", file: "absent", gone: true } });
     expect(fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBeUndefined();
     expect(fake.revocations.map((form) => [form.get("token"), form.get("token_type_hint"), form.get("client_id")]).sort()).toEqual([
       ["ps-ACCESS-1-TOKENSECRET", "access_token", "client-1"],
@@ -521,4 +521,3 @@ describe("sync command", () => {
     expect(err.join("")).toContain("Run `programscape-router connect` first");
   });
 });
-
