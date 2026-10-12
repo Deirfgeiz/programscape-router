@@ -12,10 +12,10 @@
 import type { RouterConfig } from "../config.js";
 import { ADAPTERS, type FetchLike } from "../providers/index.js";
 import type { Balance, ProviderId } from "../types.js";
-import { Connection, RECONNECT_MESSAGE } from "./connection.js";
+import { Connection, RECONNECT_MESSAGE, REMOTE_UNCERTAIN_MESSAGE } from "./connection.js";
 import { ProgramscapeError, programscapeFetch } from "./guard.js";
 import { type LiveBalance, amountIssue, liveBalance, mapProgram, readPlanPrograms } from "./plan.js";
-import { type ProviderSyncRecord, type SyncState, hasTokenFile, readSyncState, writeSyncState } from "./store.js";
+import { type ProviderSyncRecord, type SyncState, hasTokenFile, readConnectionMarker, readSyncState, writeSyncState } from "./store.js";
 
 export const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -129,7 +129,7 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
     onRejected: () =>
       updateState((state) => {
         state.off = { since: now().toISOString(), reason: RECONNECT_MESSAGE };
-      }).catch(() => undefined),
+      }),
   });
 
   /** Removes token material from a message, whatever produced it. */
@@ -143,7 +143,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
 
   async function connected(): Promise<boolean> {
     const state = await readSyncState(env);
-    return !state.off && (await hasTokenFile(env));
+    const marker = await readConnectionMarker(env);
+    return !state.off && !marker?.syncOff && !marker?.remoteGrantUncertain && (await hasTokenFile(env));
   }
 
   async function run(readings: readonly ProviderReading[]): Promise<SyncResult[]> {
@@ -239,12 +240,15 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
 
     async status() {
       const state = await readSyncState(env);
-      const on = !state.off && (await hasTokenFile(env));
+      const marker = await readConnectionMarker(env);
+      const on = !state.off && !marker?.syncOff && !marker?.remoteGrantUncertain && (await hasTokenFile(env));
       return {
         sync: on ? "on" : "off",
         mode,
         ...(state.lastSyncedAt && on ? { lastSyncedAt: state.lastSyncedAt } : {}),
-        ...(state.off ? { note: state.off.reason } : {}),
+        ...(state.off || marker?.syncOff || marker?.remoteGrantUncertain
+          ? { note: marker?.remoteGrantUncertain ? REMOTE_UNCERTAIN_MESSAGE : state.off?.reason ?? RECONNECT_MESSAGE }
+          : {}),
         providers: on
           ? Object.entries(state.providers).map(([provider, entry]) => ({ provider: provider as ProviderId, ...(entry as ProviderSyncRecord) }))
           : [],
@@ -254,7 +258,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
     async sync(readings) {
       if (!(await connected())) {
         const state = await readSyncState(env);
-        throw new ProgramscapeError("rejected", state.off?.reason ?? "Programscape sync is off. Run `programscape-router connect` first.");
+        const marker = await readConnectionMarker(env);
+        throw new ProgramscapeError("rejected", marker?.remoteGrantUncertain ? REMOTE_UNCERTAIN_MESSAGE : state.off?.reason ?? (marker?.syncOff ? RECONNECT_MESSAGE : "Programscape sync is off. Run `programscape-router connect` first."));
       }
       let results: SyncResult[];
       try {

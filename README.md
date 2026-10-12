@@ -481,10 +481,19 @@ npx programscape-router disconnect   # revokes the router's access and deletes t
 `connect` prints the sign-in link too, so it works on a machine without a browser (`--no-browser` skips opening
 one). It listens on `127.0.0.1` only for the redirect, so no firewall asks to open a port.
 
+To connect again, run `programscape-router disconnect` first. A second `connect` stops before contacting Programscape
+while a token or connection marker remains, even if the keychain temporarily cannot be reached. The marker contains
+no token or personal data; it records whether this connection might have used the keychain, whether sync is off, and
+whether Programscape may hold a token pair the router could not save. Connect, disconnect
+and token refreshes use a local lock, so they cannot change a grant at the same time. Ctrl+C or a crash can leave a
+stale lock; the CLI shows its path. Delete it only after checking that no router connection change is still running.
+
 The tokens go in your OS keychain, beside your provider keys (service `programscape-router`, account
-`programscape-token`), and `connect` says so. Only where there is no keychain, or it refuses the entry (for example a
-locked keychain, or an entry too large for Windows Credential Manager), does the router write a token file instead,
-and `connect` names it:
+`programscape-token`), and `connect` says so. If the optional keychain module is missing, no keychain backend exists,
+or the keychain can be checked but refuses to save the entry (for example, an entry too large for Windows Credential
+Manager), the router writes a token file instead. If a loaded keychain cannot be checked, `connect` stops and asks
+you to unlock or repair it before trying again; it cannot safely rule out an older grant. `connect` names the store
+used:
 
 - macOS and Linux: `~/.config/programscape-router/programscape-token.json` (or under `$XDG_CONFIG_HOME`), mode 600
   in a mode 700 folder, so only your user account can read it.
@@ -493,11 +502,13 @@ and `connect` names it:
   system read it.
 
 While a fallback file exists, the router reads that copy. It tries to delete the old keychain entry after a fallback
-write. When the keychain works again, it updates the fallback file before saving there and then deletes the file.
-This keeps a rotated token current even if a keychain read or write fails.
+write. When the keychain works again, it updates the fallback file before saving there and then deletes the file,
+unless the keychain still holds a different token pair. In that case it keeps both copies so `disconnect` can revoke
+both. This keeps a rotated token current even if a keychain read or write fails. If Programscape refuses a refresh, sync
+turns off and keeps the old token pair locally so `disconnect` can attempt to revoke it before another sign-in.
 
 If Programscape stops accepting the tokens (for example after 30 days without use, or if you remove the router's
-access on programscape.com), sync turns itself off and says to run `connect` again.
+access on programscape.com), sync turns itself off. Run `disconnect`, then `connect` to sign in again.
 
 `disconnect` blocks later automatic balance sync attempts when it can save local state; a call already in progress may
 finish. It asks Programscape to revoke every readable token pair in the keychain and file, deletes the local copies,
@@ -511,10 +522,12 @@ Disconnect from Programscape:
 Disconnected: no token is left on this machine, and Programscape revoked it.
 ```
 
-It exits 0 only when the tokens are revoked and both stores are verified empty. If the keychain cannot be opened or
-checked, it exits 1 and gives manual checks; it cannot tell whether an entry is present. It also exits 1 when removal
-or remote revocation fails. A saved off state stays in place after a failed disconnect until you run `connect` again;
-if it cannot save that state while a token remains, the CLI warns you:
+It exits 0 only when the tokens are revoked and every store this connection could have used is verified empty. A
+file-only connection made without a keychain backend can disconnect successfully without one: its nonsecret marker
+records that it never attempted a keychain write. If the keychain may hold this connection's token but cannot be
+checked, `disconnect` exits 1 and gives manual checks. It also exits 1 when removal or remote revocation fails.
+A saved off state stays in place after a failed disconnect; resolve the reported failure and retry `disconnect`
+before `connect`. If the CLI cannot save that state while a token remains, it warns you:
 
 - macOS: in Keychain Access, delete the item `programscape-router` with account `programscape-token`, or run
   `security delete-generic-password -s programscape-router -a programscape-token`.
@@ -523,6 +536,14 @@ if it cannot save that state while a token remains, the CLI warns you:
 - Linux: in Seahorse or KWallet Manager, delete the item for service `programscape-router`, username
   `programscape-token`, or run `secret-tool clear service programscape-router username programscape-token`.
 - If Programscape didn't confirm the revocation, also remove the router's access on programscape.com.
+
+If a token entry was lost or corrupted, `disconnect` cannot revoke what it cannot read and leaves the connection
+marker in place. After removing the router's access on programscape.com and checking the OS keychain entry and token
+file named above, delete `programscape-connection.json` from the token directory (`~/.config/programscape-router`
+or `$XDG_CONFIG_HOME/programscape-router` on macOS/Linux, `%LOCALAPPDATA%\programscape-router` on Windows unless
+`XDG_CONFIG_HOME` is set). Then run
+`connect`. An uncertain sign-in response may leave this marker even when no token was saved; use the same recovery
+steps. The marker contains no token.
 
 ### Which program a balance goes to
 

@@ -27,10 +27,18 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   over the keychain. Linux is pinned to the Secret Service (never the kernel keyring, which forgets keys at logout).
   Where there is no keychain, the router still works with environment variables, and `keys` says why. `status` and
   `check` show each key's source (`env`, `keychain` or none). `resolveKeys()` does the same for library users.
-- The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Only where there
-  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which. A fallback file is
+- The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Where the keychain
+  module or backend is absent, or a readable keychain refuses to save, they go in a token file, and `connect` says
+  which. A loaded but unreadable keychain blocks a new `connect` until it can be checked. A fallback file is
   authoritative while present, including when a keychain read and write both fail during rotation. A later keychain
-  write updates the file first and then deletes it after the keychain save.
+  write updates the file first and then deletes it after the keychain save, except when the keychain holds a distinct
+  older pair that `disconnect` still needs to revoke.
+- `connect` requires `disconnect` before another sign-in. A nonsecret connection marker keeps this rule in force
+  even during a temporary keychain outage; it also records whether this grant could have used the keychain, so a
+  file-only connection can still be disconnected when no keychain backend exists. Connect, disconnect and refresh
+  rotations share a lock. A refused refresh turns sync off but retains the old pair for `disconnect` to revoke.
+  If a token response or rollback is uncertain, the marker prevents a later `disconnect` from claiming full remote
+  revocation and directs the founder to remove router access on programscape.com.
 - `disconnect` blocks later automatic sync attempts when local state can be saved (an in-flight call may finish),
   revokes every readable token pair, reports the remote revocation, the
   keychain and the token file separately, reads both stores back, and exits 1 unless the tokens are revoked and

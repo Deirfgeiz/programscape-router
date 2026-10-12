@@ -8,6 +8,7 @@
  * disconnect: stop sync, revoke every readable local token pair and remove both keychain and file copies.
  */
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { FetchLike } from "../providers/index.js";
@@ -26,16 +27,24 @@ import {
 } from "./oauth.js";
 import {
   deleteClientCache,
+  deleteConnectionMarker,
   deleteSyncState,
   deleteTokenFile,
+  ConnectionLockError,
   inspectTokenFile,
+  readConnectionMarker,
+  setRemoteGrantUncertain,
   readClientCache,
   readSyncState,
+  TokenStoreOccupiedError,
   type TokenDeletion,
   type TokenLocation,
+  tokenPath,
   writeClientCache,
+  writeConnectionMarker,
   writeSyncState,
   writeTokenFile,
+  withConnectionLock,
 } from "./store.js";
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -184,7 +193,26 @@ async function clientFor(env: NodeJS.ProcessEnv, fetch: GuardedFetch, metadata: 
 }
 
 export async function connect(options: ConnectOptions): Promise<ConnectResult> {
+  try {
+    return await withConnectionLock(options.env, () => connectUnlocked(options));
+  } catch (error) {
+    if (error instanceof ConnectionLockError) throw new ProgramscapeError("refused", error.message);
+    throw error;
+  }
+}
+
+async function connectUnlocked(options: ConnectOptions): Promise<ConnectResult> {
   const { env, now, print } = options;
+  const existing = await inspectTokenFile(env);
+  if (existing.hasLocalEntry) {
+    throw new ProgramscapeError("refused", "A Programscape connection is already stored on this machine. Run `programscape-router disconnect` before connecting again.");
+  }
+  if (existing.keychainLoaded && !existing.keychainReadable && !existing.keychainBackendUnavailable) {
+    throw new ProgramscapeError("refused", "Could not check the OS keychain for an existing Programscape connection. Unlock or repair it, then run `programscape-router disconnect` before connecting again.");
+  }
+  if (await readConnectionMarker(env)) {
+    throw new ProgramscapeError("refused", "A Programscape connection may still exist. Run `programscape-router disconnect` before connecting again.");
+  }
   const fetch = programscapeFetch(options.fetch, REQUEST_TIMEOUT_MS);
   const metadata = await discover(fetch);
   const cached = await readClientCache(env);
@@ -199,28 +227,63 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
     const open = options.openBrowser === undefined ? systemBrowser : options.openBrowser;
     if (open) await Promise.resolve(open(url)).catch(() => undefined);
     const code = await callback.code;
+    // This contains no secret. It survives a keychain outage or process crash until disconnect confirms cleanup.
+    await writeConnectionMarker(env, { keychainMayHoldGrant: false, syncOff: false, remoteGrantUncertain: true });
     let tokens;
     try {
       tokens = await exchangeCode(fetch, metadata, { clientId, code, verifier: pkce.verifier, redirectUri: callback.redirectUri });
     } catch (error) {
-      // A cached client Programscape no longer knows: forget it, so the next connect registers afresh.
-      if (error instanceof ProgramscapeError && error.kind === "rejected") await deleteClientCache(env).catch(() => undefined);
-      throw error;
+      if (error instanceof ProgramscapeError && error.kind === "rejected") {
+        await deleteConnectionMarker(env).catch(() => undefined);
+        // A cached client Programscape no longer knows: forget it, so the next connect registers afresh.
+        await deleteClientCache(env).catch(() => undefined);
+        throw error;
+      }
+      // A response can be lost after Programscape has issued a grant. Keep the marker until the founder checks
+      // remote access; retrying connect could otherwise create another grant that cannot be revoked locally.
+      throw new ProgramscapeError("unreachable", "Could not confirm whether Programscape issued a sign-in token. Check and remove the router's access on programscape.com, then follow the manual connection-marker recovery instructions in the README before connecting again.");
     }
     const at = now();
-    const stored = await writeTokenFile(env, {
-      version: 1,
-      issuer: metadata.issuer,
-      clientId,
-      accessToken: tokens.accessToken,
-      ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
-      ...(tokens.expiresIn !== undefined ? { expiresAt: new Date(at.getTime() + tokens.expiresIn * 1000).toISOString() } : {}),
-      connectedAt: at.toISOString(),
-    });
-    const syncState = await readSyncState(env);
-    if (syncState.off) {
-      delete syncState.off;
-      await writeSyncState(env, syncState);
+    let stored: TokenLocation | undefined;
+    try {
+      stored = await writeTokenFile(env, {
+        version: 1,
+        issuer: metadata.issuer,
+        clientId,
+        accessToken: tokens.accessToken,
+        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+        ...(tokens.expiresIn !== undefined ? { expiresAt: new Date(at.getTime() + tokens.expiresIn * 1000).toISOString() } : {}),
+        connectedAt: at.toISOString(),
+      }, { requireEmpty: true });
+      const syncState = await readSyncState(env);
+      if (syncState.off) {
+        delete syncState.off;
+        await writeSyncState(env, syncState);
+      }
+      await setRemoteGrantUncertain(env, false);
+    } catch (error) {
+      const occupied = error instanceof TokenStoreOccupiedError;
+      const rollback = await Promise.allSettled([
+        ...(tokens.refreshToken ? [revoke(fetch, metadata, { clientId, token: tokens.refreshToken, hint: "refresh_token" })] : []),
+        revoke(fetch, metadata, { clientId, token: tokens.accessToken, hint: "access_token" }),
+      ]);
+      const revoked = rollback.every((result) => result.status === "fulfilled" && result.value);
+      if (revoked) await setRemoteGrantUncertain(env, false).catch(() => undefined);
+      // A later local-state failure can happen after the token was saved. A revoked token must be removed too.
+      const local = stored ? await deleteTokenFile(env).catch(() => undefined) : undefined;
+      if (revoked && ((occupied && !stored) || local?.gone || (!stored && !occupied && !(await inspectTokenFile(env)).hasLocalEntry))) {
+        await deleteConnectionMarker(env).catch(() => undefined);
+      }
+      throw new ProgramscapeError(
+        "refused",
+        occupied
+          ? revoked
+            ? "Another Programscape connection was stored during sign-in. Run `programscape-router disconnect` before connecting again."
+            : "Another Programscape connection was stored during sign-in, and the new grant could not be confirmed revoked. Remove the router's access on programscape.com, then run `programscape-router disconnect` before connecting again."
+          : revoked
+            ? "Could not finish the Programscape sign-in. The new grant was revoked; run `programscape-router disconnect` before trying again if a local entry remains."
+            : "Could not save the Programscape sign-in tokens, and the new grant could not be confirmed revoked. Remove the router's access on programscape.com before trying again.",
+      );
     }
     return { stored };
   } finally {
@@ -236,11 +299,22 @@ export interface DisconnectResult {
   automaticSyncDisabled: boolean;
   /** True when Programscape confirmed the revocation; false when it could not be reached or has no endpoint. */
   revoked: boolean;
+  /** The nonsecret guard against reconnecting during a keychain outage was removed. */
+  markerGone: boolean;
   /** What happened to the local copies, read back afterwards. */
   local: TokenDeletion;
 }
 
 export async function disconnect(options: { env: NodeJS.ProcessEnv; fetch: FetchLike }): Promise<DisconnectResult> {
+  try {
+    return await withConnectionLock(options.env, () => disconnectUnlocked(options));
+  } catch (error) {
+    if (error instanceof ConnectionLockError) throw new ProgramscapeError("refused", error.message);
+    throw error;
+  }
+}
+
+async function disconnectUnlocked(options: { env: NodeJS.ProcessEnv; fetch: FetchLike }): Promise<DisconnectResult> {
   const { env } = options;
   // Stop future automatic sync before attempting revocation or deletion. A failed disconnect keeps this marker;
   // only a new, successful connect clears it.
@@ -248,6 +322,8 @@ export async function disconnect(options: { env: NodeJS.ProcessEnv; fetch: Fetch
   syncState.off = { since: new Date().toISOString(), reason: "Programscape sync is off because disconnect was requested. Run `programscape-router connect` to turn it on again." };
   const offSaved = await writeSyncState(env, syncState).then(() => true, () => false);
   const inspected = await inspectTokenFile(env);
+  const marker = await readConnectionMarker(env);
+  const hadMarker = Boolean(marker);
   let revoked = false;
   if (inspected.copies.length > 0) {
     try {
@@ -263,14 +339,26 @@ export async function disconnect(options: { env: NodeJS.ProcessEnv; fetch: Fetch
       revoked = false;
     }
   }
-  const local = await deleteTokenFile(env);
-  const complete = inspected.readVerified && local.gone && (revoked || inspected.copies.length === 0);
-  if (complete) await deleteSyncState(env).catch(() => undefined);
+  const deleted = await deleteTokenFile(env);
+  // A connection made without a working keychain never placed a token there. The marker records this before any
+  // later rotation can try the keychain, so a file-only disconnect still works on machines with no keychain.
+  const fileVerified = !inspected.hasLocalEntry || Boolean(inspected.tokens);
+  const fileOnlyVerified = marker?.keychainMayHoldGrant === false && !inspected.keychainReadable && fileVerified && deleted.file !== "failed" && !existsSync(tokenPath(env));
+  const local: TokenDeletion = fileOnlyVerified && !deleted.gone
+    ? { keychain: "absent", file: deleted.file, gone: true }
+    : deleted;
+  const tokenReadVerified = inspected.readVerified || fileOnlyVerified;
+  if (marker?.remoteGrantUncertain) revoked = false;
+  const complete = !marker?.remoteGrantUncertain && tokenReadVerified && local.gone && (revoked || (inspected.copies.length === 0 && !hadMarker));
+  if (complete) await deleteConnectionMarker(env).catch(() => undefined);
+  const markerGone = !(await readConnectionMarker(env));
+  if (complete && markerGone) await deleteSyncState(env).catch(() => undefined);
   return {
-    wasConnected: inspected.copies.length > 0,
-    tokenReadVerified: inspected.readVerified,
+    wasConnected: inspected.copies.length > 0 || hadMarker,
+    tokenReadVerified,
     automaticSyncDisabled: offSaved || local.gone,
     revoked,
+    markerGone,
     local,
   };
 }

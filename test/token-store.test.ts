@@ -1,11 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli-main.js";
 import * as keys from "../src/keys.js";
 import { KEYCHAIN_SERVICE } from "../src/keys.js";
-import { TOKEN_KEYCHAIN_ACCOUNT, deleteTokenFile, readSyncState, readTokenFile, tokenPath, writeTokenFile } from "../src/programscape/store.js";
+import { TOKEN_KEYCHAIN_ACCOUNT, connectionLockPath, connectionMarkerPath, deleteTokenFile, readSyncState, readTokenFile, tokenPath, writeTokenFile } from "../src/programscape/store.js";
 import { AsyncEntry, fakeKeyring } from "./fake-keyring.js";
 import { fakeProgramscape } from "./programscape-fake.js";
 
@@ -89,7 +89,7 @@ describe("token store", () => {
     expect(await readTokenFile(env)).toBeUndefined();
   });
 
-  it("keychain, then file, then keychain again: each read returns the latest, and the file copy is deleted", async () => {
+  it("preserves a distinct old keychain grant while the fallback file rotates again", async () => {
     const env = home();
     await writeTokenFile(env, pair(1));
     expect((await readTokenFile(env))?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
@@ -99,9 +99,9 @@ describe("token store", () => {
     expect((await readTokenFile(env))?.accessToken).toBe("ps-ACCESS-2-TOKENSECRET");
 
     fakeKeyring.failing = {};
-    expect(await writeTokenFile(env, pair(3))).toMatchObject({ kind: "keychain" });
-    expect(inKeychain()).toMatchObject({ accessToken: "ps-ACCESS-3-TOKENSECRET", seq: 3 });
-    expect(existsSync(tokenPath(env))).toBe(false);
+    expect(await writeTokenFile(env, pair(3))).toMatchObject({ kind: "file" });
+    expect(inKeychain()).toMatchObject({ accessToken: "ps-ACCESS-1-TOKENSECRET", seq: 1 });
+    expect(inFile(env)).toMatchObject({ accessToken: "ps-ACCESS-3-TOKENSECRET", seq: 3 });
     expect((await readTokenFile(env))?.accessToken).toBe("ps-ACCESS-3-TOKENSECRET");
   });
 
@@ -229,20 +229,209 @@ describe("disconnect", () => {
     expect((await readSyncState(env)).off).toBeDefined();
   });
 
-  it("revokes both grants when an old keychain entry survives a fallback connect", async () => {
+  it("refuses a second connect before contacting Programscape or overwriting the first grant", async () => {
     const { fake, env } = await connectedHome();
+    const requestsBefore = fake.seen.length;
+    const err: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("Run `programscape-router disconnect` before connecting again");
+    expect(fake.seen).toHaveLength(requestsBefore);
+    expect(fake.access.size).toBe(1);
+    expect(inKeychain()?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
+  });
+
+  it("requires disconnect before reconnecting with a fallback file", async () => {
+    fakeKeyring.available = false;
+    const fake = fakeProgramscape();
+    const env = home();
+    const io = { stdout: () => {}, stderr: () => {} };
+    expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
+    expect(inFile(env)?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
+    const requestsBefore = fake.seen.length;
+    const err: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("disconnect` before connecting again");
+    expect(fake.seen).toHaveLength(requestsBefore);
+    expect(inFile(env)?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
+  });
+
+  it("disconnects and reconnects a file-only grant when no keychain backend exists", async () => {
+    fakeKeyring.available = false;
+    const fake = fakeProgramscape();
+    const env = home();
+    const io = { stdout: () => {}, stderr: () => {} };
+    expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
+    expect(existsSync(connectionMarkerPath(env))).toBe(true);
+    expect(await main(["disconnect"], io, { env, fetch: fake.fetch })).toBe(0);
+    expect(existsSync(connectionMarkerPath(env))).toBe(false);
+    expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
+    expect(inFile(env)?.accessToken).toBe("ps-ACCESS-2-TOKENSECRET");
+  });
+
+  it("blocks reconnect during a keychain outage until the old grant is disconnected", async () => {
+    const { fake, env } = await connectedHome();
+    fakeKeyring.available = false;
+    const requestsBefore = fake.seen.length;
+    const err: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("disconnect` before connecting again");
+    expect(fake.seen).toHaveLength(requestsBefore);
+    expect(await main(["disconnect"], { stdout: () => {}, stderr: () => {} }, { env, fetch: fake.fetch })).toBe(1);
+    expect(existsSync(connectionMarkerPath(env))).toBe(true);
+    fakeKeyring.available = true;
+    expect(await main(["disconnect"], { stdout: () => {}, stderr: () => {} }, { env, fetch: fake.fetch })).toBe(0);
+    expect(existsSync(connectionMarkerPath(env))).toBe(false);
+  });
+
+  it("keeps the connection marker when the token response is lost after issuance", async () => {
+    const fake = fakeProgramscape();
+    const env = home();
+    const io = { stdout: () => {}, stderr: () => {} };
+    const err: string[] = [];
+    const lostResponse: typeof fake.fetch = async (input, init) => {
+      const response = await fake.fetch(input, init);
+      if (new URL(String(input)).pathname === "/api/oauth/token") throw new Error("response lost");
+      return response;
+    };
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: lostResponse, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("remove the router's access on programscape.com");
+    expect(existsSync(connectionMarkerPath(env))).toBe(true);
+    expect(fake.access.size).toBe(1);
+    const requestsBefore = fake.seen.length;
+    expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(fake.seen).toHaveLength(requestsBefore);
+  });
+
+  it("does not replace a malformed keychain entry during connect", async () => {
+    const fake = fakeProgramscape();
+    const env = home();
+    fakeKeyring.put(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT, "unreadable entry");
+    const err: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("disconnect` before connecting again");
+    expect(fake.seen).toHaveLength(0);
+    expect(fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBe("unreadable entry");
+  });
+
+  it("blocks reconnect when the loaded keychain cannot read its existing entry", async () => {
+    const { fake, env } = await connectedHome();
+    fakeKeyring.failing.get = "read failed";
+    const requestsBefore = fake.seen.length;
+    const err: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("Could not check the OS keychain");
+    expect(fake.seen).toHaveLength(requestsBefore);
+    expect(inKeychain()?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
+  });
+
+  it("allows a new connect after disconnect revoked and removed the prior grant", async () => {
+    const { fake, env } = await connectedHome();
+    const io = { stdout: () => {}, stderr: () => {} };
+    expect(await main(["disconnect"], io, { env, fetch: fake.fetch })).toBe(0);
+    expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
+    expect(inKeychain()?.accessToken).toBe("ps-ACCESS-2-TOKENSECRET");
+    expect(fake.access).toEqual(new Set(["ps-ACCESS-2-TOKENSECRET"]));
+  });
+
+  it("does not overwrite an entry that appears while sign-in is in progress", async () => {
+    const fake = fakeProgramscape();
+    const env = home();
+    const err: string[] = [];
+    const code = await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, {
+      env,
+      config: {},
+      fetch: fake.fetch,
+      ledgerPath: false,
+      openBrowser: async (url) => {
+        fakeKeyring.put(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT, JSON.stringify(pair(99)));
+        await fake.browser(url);
+      },
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toContain("Run `programscape-router disconnect` before connecting again");
+    expect(inKeychain()?.accessToken).toBe("ps-ACCESS-99-TOKENSECRET");
+    expect(fake.access.size).toBe(0);
+    expect(fake.refresh.size).toBe(0);
+    expect(fake.revocations.map((form) => form.get("token")).sort()).toEqual(["ps-ACCESS-1-TOKENSECRET", "ps-REFRESH-1-TOKENSECRET"]);
+  });
+
+  it("revokes newly issued tokens when storage fails after sign-in", async () => {
+    const fake = fakeProgramscape();
+    const env = home();
+    const err: string[] = [];
+    const originalConfig = env.XDG_CONFIG_HOME;
+    const blocked = join(dirname(originalConfig), "blocked-config-root");
+    writeFileSync(blocked, "not a directory");
+    const code = await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, {
+      env,
+      config: {},
+      fetch: async (input, init) => {
+        const response = await fake.fetch(input, init);
+        const path = new URL(String(input)).pathname;
+        if (path === "/api/oauth/token") env.XDG_CONFIG_HOME = blocked;
+        if (path === "/api/oauth/revoke") env.XDG_CONFIG_HOME = originalConfig;
+        return response;
+      },
+      ledgerPath: false,
+      openBrowser: async (url) => {
+        fakeKeyring.failing.set = "keychain save refused";
+        await fake.browser(url);
+      },
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toContain("The new grant was revoked");
+    expect(fake.access.size).toBe(0);
+    expect(fake.refresh.size).toBe(0);
+    expect(fake.revocations.map((form) => form.get("token")).sort()).toEqual(["ps-ACCESS-1-TOKENSECRET", "ps-REFRESH-1-TOKENSECRET"]);
+  });
+
+  it("serializes concurrent connect attempts before the second makes a Programscape call", async () => {
+    const fake = fakeProgramscape();
+    const env = home();
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const first = main(["connect"], { stdout: () => {}, stderr: () => {} }, {
+      env, config: {}, fetch: fake.fetch, ledgerPath: false,
+      openBrowser: async (url) => { entered(); await hold; await fake.browser(url); },
+    });
+    await started;
+    const requestsBefore = fake.seen.length;
+    const err: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(err.join("")).toContain("Another connection change may be running");
+    expect(fake.seen).toHaveLength(requestsBefore);
+    release();
+    expect(await first).toBe(0);
+    expect(existsSync(connectionLockPath(env))).toBe(false);
+    expect(fake.access.size).toBe(1);
+  });
+
+  it("revokes both readable grants when an old keychain entry survives a fallback", async () => {
+    const { fake, env } = await connectedHome();
+    fake.access.add("ps-ACCESS-2-TOKENSECRET");
+    fake.refresh.add("ps-REFRESH-2-TOKENSECRET");
     fakeKeyring.failing = { set: "save failed", delete: "delete failed" };
-    expect(await main(["connect"], { stdout: () => {}, stderr: () => {} }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
+    expect(await writeTokenFile(env, pair(2))).toMatchObject({ kind: "file" });
     expect(inKeychain()?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
     expect(inFile(env)?.accessToken).toBe("ps-ACCESS-2-TOKENSECRET");
     fakeKeyring.failing = {};
+    // Simulate the provider rotating B to C while the old A keychain copy remains readable.
+    fake.access.delete("ps-ACCESS-2-TOKENSECRET");
+    fake.refresh.delete("ps-REFRESH-2-TOKENSECRET");
+    fake.access.add("ps-ACCESS-3-TOKENSECRET");
+    fake.refresh.add("ps-REFRESH-3-TOKENSECRET");
+    expect(await writeTokenFile(env, pair(3))).toMatchObject({ kind: "file" });
+    expect(inKeychain()?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
+    expect(inFile(env)?.accessToken).toBe("ps-ACCESS-3-TOKENSECRET");
     const out: string[] = [];
     expect(await main(["disconnect"], { stdout: (t) => out.push(t), stderr: () => {} }, { env, fetch: fake.fetch })).toBe(0);
     expect(fake.revocations.map((form) => form.get("token")).sort()).toEqual([
       "ps-ACCESS-1-TOKENSECRET",
-      "ps-ACCESS-2-TOKENSECRET",
+      "ps-ACCESS-3-TOKENSECRET",
       "ps-REFRESH-1-TOKENSECRET",
-      "ps-REFRESH-2-TOKENSECRET",
+      "ps-REFRESH-3-TOKENSECRET",
     ]);
     expect(fake.access.size).toBe(0);
     expect(fake.refresh.size).toBe(0);

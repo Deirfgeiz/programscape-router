@@ -5,6 +5,7 @@ import { formatStatus } from "./format.js";
 import { type KeyringLoader, resolveKeys } from "./keys.js";
 import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
 import { ProgramscapeError } from "./programscape/guard.js";
+import { connectionMarkerPath } from "./programscape/store.js";
 import { runMcpServer } from "./mcp.js";
 import { type Router, RouterError, type RouterOptions, createRouter } from "./router.js";
 import type { Routing } from "./types.js";
@@ -41,7 +42,7 @@ Usage:
   programscape-router status [--json] [--refresh]
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
-  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan
+  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan (disconnect first to reconnect)
   programscape-router sync [--json]              Send live balances to your plan now
   programscape-router disconnect                 Revoke the connection and remove local tokens
   programscape-router --help | --version
@@ -92,8 +93,8 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
         ? `Connected to Programscape. The sign-in token is stored in ${result.stored.label}.\n`
         : `Connected to Programscape. The sign-in token is stored at ${result.stored.path} (${
             process.platform === "win32"
-              ? "no keychain was available; the file is protected by your Windows profile folder's default permissions"
-              : "no keychain was available; the file is readable only by you"
+              ? "the keychain could not store it; the file is protected by your Windows profile folder's default permissions"
+              : "the keychain could not store it; the file is readable only by you"
           }).\n`,
     );
     const config = options.config ?? loadConfig(env, options.cwd).config;
@@ -163,7 +164,7 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   if (command === "disconnect") {
     const result = await disconnect({ env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
     const { local } = result;
-    if (!result.wasConnected && result.tokenReadVerified && local.gone) {
+    if (!result.wasConnected && result.tokenReadVerified && local.gone && result.markerGone) {
       io.stdout("Programscape sync was not connected. Nothing to do.\n");
       return 0;
     }
@@ -180,13 +181,16 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     if (!local.gone) {
       io.stderr(`Could not verify that every local sign-in token was removed. Check these stores and remove any remaining entry by hand:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
     }
+    if (!result.markerGone) {
+      io.stderr(`The connection marker remains at ${connectionMarkerPath(env)}. If no readable token remains, first remove the router's access on programscape.com and check both local token stores; then delete that marker file by hand. The next connect stays blocked until it is removed.\n`);
+    }
     if (!result.automaticSyncDisabled) {
       io.stderr("Could not turn off automatic balance sync in local state. Stop any running router and remove its local sign-in tokens.\n");
     }
     if (!result.revoked && (result.wasConnected || !result.tokenReadVerified || !local.gone)) {
       io.stderr("Programscape did not confirm the revocation: check and remove the router's access on programscape.com as well.\n");
     }
-    if (result.tokenReadVerified && local.gone && (result.revoked || !result.wasConnected)) {
+    if (result.tokenReadVerified && local.gone && result.markerGone && (result.revoked || !result.wasConnected)) {
       io.stdout("Disconnected: no token is left on this machine, and Programscape revoked it.\n");
       return 0;
     }
