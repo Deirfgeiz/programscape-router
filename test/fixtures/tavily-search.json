@@ -1,0 +1,14 @@
+{
+  "query": "Who is Leo Messi?",
+  "results": [
+    {
+      "title": "Lionel Messi Facts | Britannica",
+      "url": "https://www.britannica.com/facts/Lionel-Messi",
+      "content": "Lionel Messi, an Argentine footballer, is widely regarded as one of the greatest football players of his generation...",
+      "score": 0.81025416,
+      "published_date": "Tue, 11 Mar 2025 17:00:00 GMT"
+    }
+  ],
+  "images": [],
+  "response_time": 1.67
+}

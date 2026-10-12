@@ -1,0 +1,7 @@
+{
+  "success": true,
+  "data": {
+    "markdown": "# Example Page\n\nBody text.",
+    "metadata": { "title": "Example Page Title", "sourceURL": "https://example.com", "url": "https://example.com/" }
+  }
+}

@@ -85,6 +85,7 @@ function isSpent(balance: Balance): boolean {
 }
 
 function pct(share: number): string {
+  if (share > 0 && share < 0.01) return "under 1%";
   return `${Math.round(share * 100)}%`;
 }
 

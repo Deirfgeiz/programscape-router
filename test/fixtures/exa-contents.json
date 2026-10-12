@@ -1,0 +1,7 @@
+{
+  "requestId": "e492118ccdedcba5088bfc4357a8a125",
+  "results": [
+    { "title": "Example Domain", "url": "https://example.com/", "text": "# Example Domain\n\nThis domain is for use in examples." }
+  ],
+  "statuses": [{ "id": "https://example.com/", "status": "success", "source": "cached" }]
+}

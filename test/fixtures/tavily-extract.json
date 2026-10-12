@@ -1,0 +1,6 @@
+{
+  "results": [{ "url": "https://example.com/article", "raw_content": "Example extracted article content.", "images": [] }],
+  "failed_results": [],
+  "response_time": 0.5,
+  "request_id": "123e4567-e89b-12d3-a456-426614174111"
+}

@@ -1,0 +1,14 @@
+{
+  "extract_id": "extract_8a911eb27c7a4afaa20d0d9dc98d07c0",
+  "results": [
+    {
+      "url": "https://www.example.com",
+      "title": "Example Title",
+      "publish_date": "2024-01-15",
+      "excerpts": ["Excerpted text ..."],
+      "full_content": "Full content ..."
+    }
+  ],
+  "errors": [],
+  "session_id": "session_8a911eb27c7a4afaa20d0d9dc98d07c0"
+}

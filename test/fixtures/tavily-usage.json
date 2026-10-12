@@ -1,0 +1,15 @@
+{
+  "key": { "usage": 150, "limit": 1000, "search_usage": 100, "extract_usage": 25, "crawl_usage": 15, "map_usage": 7, "research_usage": 3 },
+  "account": {
+    "current_plan": "Bootstrap",
+    "plan_usage": 500,
+    "plan_limit": 15000,
+    "paygo_usage": 25,
+    "paygo_limit": 100,
+    "search_usage": 350,
+    "extract_usage": 75,
+    "crawl_usage": 50,
+    "map_usage": 15,
+    "research_usage": 10
+  }
+}

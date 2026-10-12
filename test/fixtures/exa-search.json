@@ -1,0 +1,16 @@
+{
+  "requestId": "b5947044c4b78efa9552a7c89b306d95",
+  "results": [
+    {
+      "title": "A Comprehensive Overview of Large Language Models",
+      "url": "https://arxiv.org/pdf/2307.06435.pdf",
+      "publishedDate": "2023-11-16T01:36:32.547Z",
+      "author": "Humza Naveed",
+      "id": "https://arxiv.org/abs/2307.06435",
+      "highlights": ["Such requirements have limited their adoption..."]
+    },
+    { "title": "No date", "url": "https://example.com/b", "summary": "A summary." }
+  ],
+  "searchTime": 312,
+  "costDollars": { "total": 0.005 }
+}

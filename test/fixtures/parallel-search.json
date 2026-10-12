@@ -1,0 +1,12 @@
+{
+  "search_id": "search_fcb2b4f3c75e418687bccaa1a8381331",
+  "results": [
+    {
+      "url": "https://www.example.com",
+      "title": "Sample webpage title",
+      "publish_date": "2024-01-15",
+      "excerpts": ["Sample excerpt 1", "Sample excerpt 2"]
+    }
+  ],
+  "session_id": "session_fcb2b4f3c75e418687bccaa1a8381331"
+}
