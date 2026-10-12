@@ -8,7 +8,8 @@
  * - The client file caches the dynamically registered public client (no secret), so a later `connect` can reuse it
  *   when the same loopback port is free.
  * - The sync state file records, per provider, when a sync was last tried and how it ended. It holds program ids,
- *   times and the outcome, never a token, key, query or URL.
+ *   times and the outcome, never a token, key, query or URL. It also keeps, per provider, the founder's own expiration
+ *   date and award for the approved program that provider maps to, as `my_plan` returned them (0151 ruling 5).
  */
 import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -157,10 +158,22 @@ export interface ProviderSyncRecord {
   programId?: string;
 }
 
+/** The founder's own dates for the approved program a provider maps to, as `my_plan` returned them. Never computed. */
+export interface PlanDates {
+  programId: string;
+  name?: string;
+  /** The founder's own expiration date (YYYY-MM-DD). */
+  expiresOn?: string;
+  /** The award the founder entered. */
+  award?: { amount: number; unit: string };
+}
+
 export interface SyncState {
   version: 1;
   lastSyncedAt?: string;
   providers: Partial<Record<ProviderId, ProviderSyncRecord>>;
+  /** From the last read of the plan: when it was read, and the dates per provider. */
+  plan?: { readAt: string; dates: Partial<Record<ProviderId, PlanDates>> };
 }
 
 /**
@@ -614,7 +627,38 @@ export async function readSyncState(env: NodeJS.ProcessEnv): Promise<SyncState> 
       ...(programId ? { programId } : {}),
     };
   }
+  const plan = isRecord(raw.plan) ? raw.plan : undefined;
+  const readAt = plan ? text(plan.readAt) : undefined;
+  if (plan && readAt) {
+    const dates = isRecord(plan.dates) ? plan.dates : {};
+    clean.plan = { readAt, dates: {} };
+    for (const id of PROVIDER_IDS) {
+      const entry = dates[id];
+      const parsed = isRecord(entry) ? readPlanDates(entry) : undefined;
+      if (parsed) clean.plan.dates[id] = parsed;
+    }
+  }
   return clean;
+}
+
+/** A plan date as the founder entered it: a real calendar day, YYYY-MM-DD. */
+export function isPlanDay(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+}
+
+function readPlanDates(entry: Record<string, unknown>): PlanDates | undefined {
+  const programId = text(entry.programId);
+  if (!programId) return undefined;
+  const name = text(entry.name);
+  const award = isRecord(entry.award) ? entry.award : undefined;
+  const amount = award && typeof award.amount === "number" && Number.isFinite(award.amount) && award.amount >= 0 ? award.amount : undefined;
+  const unit = award ? text(award.unit) : undefined;
+  return {
+    programId,
+    ...(name ? { name } : {}),
+    ...(isPlanDay(entry.expiresOn) ? { expiresOn: entry.expiresOn } : {}),
+    ...(amount !== undefined && unit ? { award: { amount, unit } } : {}),
+  };
 }
 
 export function writeSyncState(env: NodeJS.ProcessEnv, state: SyncState): Promise<void> {

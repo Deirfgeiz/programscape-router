@@ -2,15 +2,22 @@
  * `programscape-router check`: one live call per provider and capability, made with the founder's own keys.
  *
  * Each adapter is called directly (no routing, no failover), so every provider is tested on its own.
- * The check writes nothing to the ledger and never talks to Programscape. Its report carries outcomes,
- * HTTP statuses, documented error codes, latencies, counts and lengths only: never a key, a result title, URL,
- * snippet, page content or balance amount. A provider's own error text can echo any of those back (a short key, an
- * amount, a URL, an email), so it is left out unless `verbose` asks for it, and then marked as not for sharing.
+ * The check writes nothing to the ledger. A balance it reads is kept in readings.json, like any live balance read, and
+ * the report says how long it lasts at the recent pace (an estimate) where the readings allow. Its only call to
+ * Programscape is the public catalog read (catalog.ts: provider ids only, at most once a day, off when the config or
+ * environment says so), for the short list of programs that can add more. Its report carries outcomes, HTTP statuses,
+ * documented error codes, latencies, counts and lengths only: never a key, a result title, URL, snippet, page content
+ * or balance amount. A provider's own error text can echo any of those back (a short key, an amount, a URL, an email),
+ * so it is left out unless `verbose` asks for it, and then marked as not for sharing.
  */
+import { type ProviderPrograms, readPrograms, short, shortLines } from "./catalog.js";
+import type { RouterConfig } from "./config.js";
 import { type KeySource, type ResolvedKeys, keysFromEnv } from "./keys.js";
+import { Readings, defaultReadingsPath } from "./readings.js";
+import { runwaysFor } from "./runway.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter } from "./providers/index.js";
 import { isDocumentedCode } from "./providers/http.js";
-import { type Capability, type Outcome, PROVIDER_IDS, type ProviderId } from "./types.js";
+import { type Balance, type Capability, type Outcome, PROVIDER_IDS, type ProviderId } from "./types.js";
 import { VERSION } from "./version.js";
 
 /** The query each provider is asked to search for. */
@@ -85,6 +92,11 @@ export interface CheckProvider {
   /** False when the provider publishes no balance endpoint, so no balance call was made. */
   balanceSupported: boolean;
   calls: CheckCall[];
+  /**
+   * How long each balance lasts at the recent pace, from this read and earlier ones in readings.json: always an
+   * estimate. Only our own words and a whole number of days; never an amount or the provider's label.
+   */
+  runway?: Array<{ daysLeft: number; lastsPastPeriodEnd?: string; words: string }>;
 }
 
 export interface CheckReport {
@@ -106,6 +118,8 @@ export interface CheckReport {
   verbose: boolean;
   /** Set on a verbose report: don't share it. */
   warning?: string;
+  /** Programs that can add more, from Programscape's public catalog (short version). Absent when off or unreadable. */
+  programs?: ProviderPrograms[];
 }
 
 export interface CheckOptions {
@@ -120,6 +134,12 @@ export interface CheckOptions {
   clock?: () => number;
   /** Include each provider's own error message (redacted, but not safe to share). Default false. */
   verbose?: boolean;
+  /** The config, read only for the catalog switch (`programscape.catalog`). */
+  config?: RouterConfig;
+  /** Path of readings.json, or false for none. Defaults to the state directory. */
+  readingsPath?: string | false;
+  /** Path of the catalog cache, or false to turn the catalog off. Defaults to the state directory. */
+  catalogPath?: string | false;
 }
 
 function redactor(keys: readonly string[]): (message: string) => string {
@@ -175,9 +195,10 @@ async function checkProvider(
   fetchImpl: FetchLike,
   clock: () => number,
   redact: ((message: string) => string) | undefined,
-): Promise<CheckCall[]> {
+): Promise<{ calls: CheckCall[]; balances: Balance[] }> {
   const ctx = (timeoutMs: number): CallContext => ({ key, fetch: fetchImpl, timeoutMs });
   const calls: CheckCall[] = [];
+  let balances: Balance[] = [];
   if (adapter.search) {
     const search = adapter.search;
     calls.push(
@@ -201,6 +222,7 @@ async function checkProvider(
     calls.push(
       await timed(adapter, "balance", clock, redact, async () => {
         const reading = await balance(ctx(BALANCE_TIMEOUT_MS));
+        balances = reading.balances;
         return {
           balances: reading.balances.map((entry) => ({
             kind: entry.kind,
@@ -210,7 +232,7 @@ async function checkProvider(
       }),
     );
   }
-  return calls;
+  return { calls, balances };
 }
 
 /** Makes one search, one scrape and (where published) one balance read per provider with a key set. */
@@ -231,9 +253,12 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
   const redact = verbose ? redactor([...keys.values()]) : undefined;
   const asOf = now().toISOString();
 
+  const readingsPath = options.readingsPath === false ? undefined : (options.readingsPath ?? defaultReadingsPath(env));
+  const readings = readingsPath ? new Readings(readingsPath) : undefined;
+
   // Providers run side by side; each provider's own calls run one after another.
-  const providers = await Promise.all(
-    PROVIDER_IDS.map(async (id): Promise<CheckProvider> => {
+  const checked = await Promise.all(
+    PROVIDER_IDS.map(async (id): Promise<CheckProvider & { balances: Balance[] }> => {
       const adapter = ADAPTERS[id];
       const key = keys.get(id);
       const base = {
@@ -243,9 +268,24 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
         keySource: key ? resolved.sources[id] : ("none" as const),
         balanceSupported: adapter.balance !== undefined,
       };
-      if (!key) return { ...base, skipped: `no key: set ${adapter.envVar} or run \`programscape-router keys set ${id}\``, calls: [] };
-      return { ...base, calls: await checkProvider(adapter, key, fetchImpl, clock, redact) };
+      if (!key) return { ...base, skipped: `no key: set ${adapter.envVar} or run \`programscape-router keys set ${id}\``, calls: [], balances: [] };
+      return { ...base, ...(await checkProvider(adapter, key, fetchImpl, clock, redact)) };
     }),
+  );
+  for (const entry of checked) void readings?.record(entry.provider, entry.balances, now());
+  const file = readings ? await readings.read(now()) : undefined;
+  const providers = checked.map(({ balances, ...provider }): CheckProvider => {
+    const runway = file ? runwaysFor(provider.name, provider.provider, balances, file.readings) : [];
+    return {
+      ...provider,
+      ...(runway.length > 0
+        ? { runway: runway.map((entry) => ({ daysLeft: entry.daysLeft, ...(entry.lastsPastPeriodEnd ? { lastsPastPeriodEnd: entry.lastsPastPeriodEnd } : {}), words: entry.words })) }
+        : {}),
+    };
+  });
+  const catalog = await readPrograms(
+    { env, ...(options.config ? { config: options.config } : {}), fetch: fetchImpl, now, ...(options.catalogPath !== undefined ? { path: options.catalogPath } : {}) },
+    [...keys.keys()],
   );
 
   const calls = providers.flatMap((provider) => provider.calls);
@@ -264,6 +304,7 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
     ...(resolved.keychainNote ? { keychainNote: resolved.keychainNote } : {}),
     verbose,
     ...(verbose ? { warning: VERBOSE_WARNING } : {}),
+    ...(catalog ? { programs: catalog.providers.map(short) } : {}),
   };
 }
 
@@ -286,7 +327,7 @@ export function formatCheck(report: CheckReport): string {
     ...(report.warning ? [report.warning, ""] : []),
     `programscape-router check ${report.version} at ${report.asOf}`,
     `Per provider: one search ("${report.query}", up to ${report.maxResults} results), one scrape (${report.url}), and a balance read where the provider publishes one.`,
-    "Each provider is called directly: no routing, no failover, nothing written to the ledger, nothing sent to Programscape.",
+    "Each provider is called directly: no routing, no failover, nothing written to the ledger. Balances read are kept in readings.json, for the runway estimate.",
     "",
   ];
   for (const provider of report.providers) {
@@ -301,6 +342,7 @@ export function formatCheck(report: CheckReport): string {
       if (call.providerMessage !== undefined) lines.push(`           provider said (not for sharing): ${call.providerMessage}`);
     }
     if (!provider.balanceSupported) lines.push(`  ${"balance".padEnd(9)}${"-".padEnd(30)}  no public balance endpoint (add your credits in config)`);
+    for (const runway of provider.runway ?? []) lines.push(`  ${"runway".padEnd(9)}${runway.words}`);
     lines.push("");
   }
   if (report.keychainNote) lines.push(`Keychain: ${report.keychainNote}`, "");
@@ -314,6 +356,8 @@ export function formatCheck(report: CheckReport): string {
         `${skipped > 0 ? `; ${skipped} provider${skipped === 1 ? "" : "s"} skipped (no key)` : ""}.`,
     );
   }
+  const programs = shortLines(report.programs);
+  if (programs.length > 0) lines.push("", ...programs);
   if (report.warning) lines.push("", report.warning);
   return lines.join("\n");
 }

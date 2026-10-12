@@ -8,7 +8,12 @@
 
 // The router.
 export { createRouter, RouterError } from "./router.js";
-export type { Router, RouterOptions, RouterStatus, ProviderStatus, RouterErrorCode } from "./router.js";
+export type { Router, RouterOptions, RouterStatus, ProviderStatus, RouterErrorCode, HeadsUp } from "./router.js";
+
+// The runway estimate (worked out locally from readings.json) and the programs that can add more (Programscape's
+// public catalog), as router.status() and runCheck() report them.
+export type { RunwayEstimate } from "./runway.js";
+export type { CatalogProgram, CatalogProvider, ProviderPrograms } from "./catalog.js";
 
 // Requests, results, outcomes and balances.
 export * from "./types.js";

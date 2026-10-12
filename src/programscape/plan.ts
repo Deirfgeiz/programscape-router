@@ -4,16 +4,24 @@
  * settles it in config with `providers.<id>.programscapeProgram`.
  *
  * `my_plan` (founder-ecosystem 0149 Phase C) lists kept programs as `{ id, name, provider: { id, ... }, ... }`, with
- * `approved: true` only when the founder marked the program approved; the key is absent otherwise.
+ * `approved: true` only when the founder marked the program approved; the key is absent otherwise. Since 0151
+ * (ruling 5), an approved program may also carry the founder's own `expiresOn` (YYYY-MM-DD) and
+ * `award: { amount, unit: "usd" }`, as they entered them. The router reads both only for an approved program, and
+ * never works either out.
  */
 import { ADAPTERS } from "../providers/index.js";
-import type { Balance, ProviderId } from "../types.js";
+import { PROVIDER_IDS, type Balance, type ProviderId } from "../types.js";
+import { type PlanDates, isPlanDay } from "./store.js";
 
 export interface PlanProgram {
   id: string;
   providerId?: string;
   name?: string;
   approved: boolean;
+  /** The founder's own expiration date, for an approved program. */
+  expiresOn?: string;
+  /** The award the founder entered, for an approved program. */
+  award?: { amount: number; unit: string };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,8 +45,42 @@ export function readPlanPrograms(output: unknown): PlanProgram[] {
     if (!id) return [];
     const providerId = providerIdOf(entry);
     const name = text(entry.name);
-    return [{ id, ...(providerId ? { providerId } : {}), ...(name ? { name } : {}), approved: entry.approved === true }];
+    const approved = entry.approved === true;
+    const award = isRecord(entry.award) ? entry.award : undefined;
+    const amount = award && typeof award.amount === "number" && Number.isFinite(award.amount) && award.amount >= 0 ? award.amount : undefined;
+    const unit = award ? text(award.unit) : undefined;
+    return [
+      {
+        id,
+        ...(providerId ? { providerId } : {}),
+        ...(name ? { name } : {}),
+        approved,
+        ...(approved && isPlanDay(entry.expiresOn) ? { expiresOn: entry.expiresOn } : {}),
+        ...(approved && amount !== undefined && unit ? { award: { amount, unit } } : {}),
+      },
+    ];
   });
+}
+
+/**
+ * Per provider, the founder's own dates for the one approved program it maps to (as for balances: one match, or the
+ * config override). A provider whose program carries neither a date nor an award has no entry.
+ */
+export function planDatesByProvider(programs: PlanProgram[], overrides: Partial<Record<ProviderId, string | undefined>>): Partial<Record<ProviderId, PlanDates>> {
+  const dates: Partial<Record<ProviderId, PlanDates>> = {};
+  for (const provider of PROVIDER_IDS) {
+    const mapping = mapProgram(provider, programs, overrides[provider]);
+    if (mapping.kind !== "mapped") continue;
+    const program = programs.find((entry) => entry.id === mapping.programId);
+    if (!program || (!program.expiresOn && !program.award)) continue;
+    dates[provider] = {
+      programId: program.id,
+      ...(program.name ? { name: program.name } : {}),
+      ...(program.expiresOn ? { expiresOn: program.expiresOn } : {}),
+      ...(program.award ? { award: program.award } : {}),
+    };
+  }
+  return dates;
 }
 
 export type Mapping =

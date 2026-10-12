@@ -96,8 +96,8 @@ export interface ScrapeResponse {
 export type BalanceKind = "credits" | "pay-as-you-go" | "key-limit";
 
 /**
- * One balance, exactly as a provider reported it or as the founder entered it.
- * Balances are never added together: each keeps its own unit.
+ * One balance, exactly as a provider reported it or as the founder entered it (in config, or on their Programscape
+ * plan). Balances are never added together: each keeps its own unit.
  */
 export interface Balance {
   label: string;
@@ -108,7 +108,11 @@ export interface Balance {
   total?: number;
   /** ISO date or date-time after which these credits end (or the billing period resets). */
   endsOn?: string;
-  source: "provider" | "config";
+  /**
+   * "provider": read live from the provider's own endpoint. "config": entered in the config file. "plan": the
+   * founder's own expiration date and award on their Programscape plan, read by the opt-in sync (a config date wins).
+   */
+  source: "provider" | "config" | "plan";
   /** When the provider reported it. */
   asOf?: string;
 }

@@ -1,3 +1,4 @@
+import { shortLines } from "./catalog.js";
 import type { CapabilityOrder } from "./order.js";
 import type { ProgramscapeSyncStatus } from "./programscape/sync.js";
 import type { RouterStatus } from "./router.js";
@@ -18,7 +19,13 @@ export function formatBalance(balance: Balance): string {
     parts.push("amount unknown");
   }
   if (balance.endsOn) parts.push(`ends ${balance.endsOn}`);
-  parts.push(balance.source === "provider" ? `reported by the provider at ${balance.asOf ?? "an unknown time"}` : "from your config");
+  parts.push(
+    balance.source === "provider"
+      ? `reported by the provider at ${balance.asOf ?? "an unknown time"}`
+      : balance.source === "plan"
+        ? "your own date, from your Programscape plan"
+        : "from your config",
+  );
   return `"${balance.label}" (${balance.kind}): ${parts.join(", ")}`;
 }
 
@@ -62,8 +69,15 @@ export function formatStatus(status: RouterStatus): string {
     if (provider.exhausted) lines.push(`    credits spent: ${provider.exhausted.reason}${provider.exhausted.until ? ` Until ${provider.exhausted.until}.` : ""}`);
     for (const balance of provider.balances) lines.push(`    - ${formatBalance(balance)}`);
     if (provider.balanceNote) lines.push(`    ${provider.balanceNote}`);
+    for (const runway of provider.runway ?? []) lines.push(`    ${runway.words}.`);
   }
   if (status.keychainNote) lines.push(`  Keychain: ${status.keychainNote}`);
+  if (status.headsUp.length > 0) {
+    lines.push("", `Heads-up (under ${status.headsUpDays} days)`);
+    for (const entry of status.headsUp) lines.push(`  ${entry.provider}: ${entry.words.replace(/^Heads-up: /, "")}`);
+  }
+  const programs = shortLines(status.programs);
+  if (programs.length > 0) lines.push("", ...programs);
   lines.push("", ...formatOrder(status.order.search), "", ...formatOrder(status.order.scrape), "");
   lines.push(...formatSync(status.programscape), "");
   lines.push("Each balance is shown on its own, in its own unit. Balances are never added together.");

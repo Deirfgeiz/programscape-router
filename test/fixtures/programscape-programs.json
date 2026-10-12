@@ -1,0 +1,70 @@
+{
+  "about": "Programscape’s public catalog: for each provider, its startup programs open today and other providers’ programs that do the same job, alphabetical and never ranked. Each program has its official source and the date Programscape checked it. Whether a founder qualifies is the provider’s decision.",
+  "asOf": "2026-10-12",
+  "providers": [
+    {
+      "provider": { "id": "firecrawl", "name": "Firecrawl" },
+      "capabilities": ["scrape", "search"],
+      "more": [
+        {
+          "id": "firecrawl.claude-startup-perks",
+          "name": "Claude for Startups: Firecrawl perk",
+          "provider": { "id": "firecrawl", "name": "Firecrawl" },
+          "headline": "2.5 times the Firecrawl credits for Claude for Startups members",
+          "capabilities": ["scrape", "search"],
+          "checkedOn": "2026-10-07",
+          "mayBeOutOfDate": false,
+          "officialSource": { "title": "Claude for Startups perks", "url": "https://claude.com/programs/startups" },
+          "qualify": "https://programscape.com/?program=firecrawl.claude-startup-perks#locate"
+        },
+        {
+          "id": "firecrawl.startup-deal",
+          "name": "Firecrawl startup deal",
+          "provider": { "id": "firecrawl", "name": "Firecrawl" },
+          "headline": "A year of Firecrawl credits for early-stage startups",
+          "ask": "Ask Firecrawl",
+          "capabilities": ["scrape", "search"],
+          "checkedOn": "2026-09-30",
+          "mayBeOutOfDate": true,
+          "officialSource": { "title": "Firecrawl for startups", "url": "https://www.firecrawl.dev/startups" },
+          "qualify": "https://programscape.com/?program=firecrawl.startup-deal#locate"
+        }
+      ],
+      "sameJob": [
+        {
+          "id": "exa.startup-grant",
+          "name": "Exa startup grant",
+          "provider": { "id": "exa", "name": "Exa" },
+          "headline": "Exa API credits for startups",
+          "ask": "Ask Exa",
+          "capabilities": ["search"],
+          "checkedOn": "2026-10-01",
+          "mayBeOutOfDate": false,
+          "officialSource": { "title": "Exa for startups", "url": "https://exa.ai/startups" },
+          "qualify": "https://programscape.com/?program=exa.startup-grant#locate"
+        }
+      ],
+      "page": "https://programscape.com/extend/firecrawl"
+    },
+    {
+      "provider": { "id": "tavily", "name": "Tavily" },
+      "capabilities": ["scrape", "search"],
+      "more": [],
+      "sameJob": [
+        {
+          "id": "exa.startup-grant",
+          "name": "Exa startup grant",
+          "provider": { "id": "exa", "name": "Exa" },
+          "headline": "Exa API credits for startups",
+          "ask": "Ask Exa",
+          "capabilities": ["search"],
+          "checkedOn": "2026-10-01",
+          "mayBeOutOfDate": false,
+          "officialSource": { "title": "Exa for startups", "url": "https://exa.ai/startups" },
+          "qualify": "https://programscape.com/?program=exa.startup-grant#locate"
+        }
+      ],
+      "page": "https://programscape.com/extend/tavily"
+    }
+  ]
+}

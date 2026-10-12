@@ -27,6 +27,11 @@ export interface KeptProgram {
   approved?: boolean;
   /** The balance already on the plan, if any. */
   balance?: { amount: number; unit: string; asOf: string; source: string };
+  /** The founder's own expiration date and award (0151 ruling 5): my_plan returns them only for an approved program. */
+  expiresOn?: string;
+  award?: { amount: number; unit: "usd" };
+  /** The runway estimate last reported with a balance. */
+  estimate?: { daysLeft: number };
 }
 
 export interface FakeOptions {
@@ -60,6 +65,8 @@ export function fakeProgramscape(options: FakeOptions = {}) {
     refuseReport: undefined as string | undefined,
     /** Make the revocation endpoint fail. */
     revokeFails: false,
+    /** Refuse a report_balance that carries an estimate, as a plan from before founder-ecosystem#541 might. */
+    refuseEstimate: false,
   };
 
   function issue() {
@@ -88,7 +95,13 @@ export function fakeProgramscape(options: FakeOptions = {}) {
           id: program.id,
           name: `${program.provider} program ${program.id}`,
           provider: { id: program.provider, name: program.provider },
-          ...(program.approved ? { approved: true } : {}),
+          ...(program.approved
+            ? {
+                approved: true,
+                ...(program.expiresOn ? { expiresOn: program.expiresOn } : {}),
+                ...(program.award ? { award: { ...program.award, shown: `$${program.award.amount} awarded, as you entered it` } } : {}),
+              }
+            : {}),
           ...(program.balance ? { balance: program.balance } : {}),
         })),
         setAside: [],
@@ -108,12 +121,16 @@ export function fakeProgramscape(options: FakeOptions = {}) {
             asOf: z.iso.datetime({ offset: true }).optional(),
             source: z.enum(["router", "assistant"]).optional(),
             lowBalanceAt: z.object({ amount: z.number(), unit: z.enum(["usd", "credits", "requests"]) }).strict().optional(),
+            // As founder-ecosystem#541 declares it: router only.
+            estimate: z.object({ daysLeft: z.number().int().min(0).max(3650) }).strict().optional(),
           })
           .strict().shape,
       },
       async (args) => {
         const refuse = (text: string) => ({ isError: true, content: [{ type: "text" as const, text }] });
         if (behaviour.refuseReport) return refuse(behaviour.refuseReport);
+        if (args.estimate && behaviour.refuseEstimate) return refuse("Unrecognized key: estimate. Nothing was changed.");
+        if (args.estimate && args.source !== "router") return refuse("Only the founder’s own router sends a runway estimate, with a balance it read. Nothing was changed.");
         const asOf = args.asOf ? Date.parse(args.asOf) : Date.now();
         if (asOf > Date.now() + 5 * 60_000) return refuse("That balance is dated in the future. Send when it was read from the provider, or leave asOf out to mean now. Nothing was changed.");
         if (args.amount < 0 || (args.unit !== "usd" && !Number.isInteger(args.amount))) return refuse("That balance can’t be recorded: the amount is not valid. Nothing was changed.");
@@ -122,7 +139,11 @@ export function fakeProgramscape(options: FakeOptions = {}) {
         if (!program.approved) return refuse(`${args.programId} isn’t marked approved on the founder’s plan. A balance is recorded only once the provider has said yes: mark it approved on your plan first, at https://programscape.com/plans. Nothing was changed.`);
         const balance = { amount: args.amount, unit: args.unit, asOf: new Date(asOf).toISOString(), source: args.source ?? "assistant" };
         const older = program.balance !== undefined && program.balance.asOf > balance.asOf;
-        if (!older) program.balance = balance;
+        if (!older) {
+          program.balance = balance;
+          if (args.estimate) program.estimate = args.estimate;
+          else delete program.estimate;
+        }
         const stored = {
           saved: true,
           unchanged: older,
@@ -131,6 +152,9 @@ export function fakeProgramscape(options: FakeOptions = {}) {
           name: `${program.provider} program ${program.id}`,
           ...(older ? { note: "The plan already holds a later reading, so it was kept. The balance below is the one on the plan." } : {}),
           balance: { ...program.balance, shown: `${program.balance?.amount} ${program.balance?.unit}` },
+          ...(program.estimate && !older
+            ? { estimate: { daysLeft: program.estimate.daysLeft, workedOutAt: new Date().toISOString(), forBalanceAt: balance.asOf, shown: `about ${program.estimate.daysLeft} days left at your recent pace (estimate)` } }
+            : {}),
           rule: "This is a reported balance with the time it was read, never a total.",
           open: `https://programscape.com/plans#program=${args.programId}`,
         };

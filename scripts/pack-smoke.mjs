@@ -145,6 +145,8 @@ export async function use(): Promise<void> {
     ...homes,
     XDG_CONFIG_HOME: join(home, "config"),
     XDG_STATE_HOME: join(home, "state"),
+    // No live call to programscape.com from CI: the catalog read has its own tests with a mocked fetch.
+    PROGRAMSCAPE_ROUTER_CATALOG: "off",
   };
   // On Linux and macOS the keychain needs the session's own variables (D-Bus, the user) to reach the store.
   for (const name of ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP"]) {

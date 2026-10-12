@@ -1,7 +1,7 @@
 import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CHECK_HINTS, CHECK_URL, VERBOSE_WARNING, formatCheck, runCheck } from "../src/check.js";
 import { main } from "../src/cli-main.js";
 import { URLS, fixture, json, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
@@ -82,7 +82,8 @@ describe("check", () => {
   it("calls every provider directly, once per capability, and passes when every call passes", async () => {
     const { fetch, calls } = mockFetch(success);
     // Providers run side by side, so a stepping clock would interleave; a fixed one keeps latencies at 0 here.
-    const report = await runCheck({ env: KEYS, fetch, now: () => new Date("2026-10-11T12:00:00Z"), clock: () => 1000 });
+    // The catalog read has its own tests below; here, only provider calls.
+    const report = await runCheck({ env: KEYS, fetch, now: () => new Date("2026-10-11T12:00:00Z"), clock: () => 1000, catalogPath: false });
 
     expect(report.ok).toBe(true);
     expect(report).toMatchObject({ attempted: 18, passed: 18, failed: 0, query: "startup credits", maxResults: 3, url: "https://example.com" });
@@ -376,7 +377,12 @@ describe("check", () => {
     expect(text).toContain("linkup: skipped (no key: set LINKUP_API_KEY or run `programscape-router keys set linkup`)");
     expect(text).toContain("youcom: skipped (no key: set YDC_API_KEY or run `programscape-router keys set youcom`)");
     expect(text).toContain("PASS: 3 of 3 calls passed; 6 providers skipped (no key).");
-    expect(calls.every((call) => new URL(call.url).host === "api.tavily.com")).toBe(true);
+    // Provider calls go to Tavily only; the one other call is the catalog read, carrying only that provider's id.
+    const toProviders = calls.filter((call) => new URL(call.url).host !== "programscape.com");
+    expect(toProviders.every((call) => new URL(call.url).host === "api.tavily.com")).toBe(true);
+    expect(calls.filter((call) => new URL(call.url).host === "programscape.com").map((call) => call.url)).toEqual([
+      "https://programscape.com/api/router/programs?providers=tavily",
+    ]);
   });
 
   it("exits 1 and says so when no key is set at all", async () => {
@@ -397,7 +403,7 @@ describe("check", () => {
     expectNoContent(out.join(""));
   });
 
-  it("writes nothing to the ledger, never calls Programscape, and ignores the config file", async () => {
+  it("writes nothing to the ledger, keeps only readings, and with a config it can't read, leaves the catalog off", async () => {
     const state = mkdtempSync(join(tmpdir(), "psr-check-state-"));
     const config = mkdtempSync(join(tmpdir(), "psr-check-config-"));
     const { fetch, calls } = mockFetch(success);
@@ -406,12 +412,81 @@ describe("check", () => {
       ...KEYS,
       XDG_STATE_HOME: state,
       XDG_CONFIG_HOME: config,
-      // A broken config would stop every other command; check does not read config at all.
+      // A broken config stops every other command; check still runs, and since it can't tell whether the founder
+      // turned the catalog off, it leaves the catalog off.
       PROGRAMSCAPE_ROUTER_CONFIG: "/definitely/not/here.json",
     };
     expect(await main(["check"], streams, { env, fetch })).toBe(0);
-    expect(readdirSync(state)).toEqual([]);
+    expect(readdirSync(join(state, "programscape-router"))).toEqual(["readings.json"]);
     expect(readdirSync(config)).toEqual([]);
     expect(calls.some((call) => call.url.includes("programscape"))).toBe(false);
+  });
+
+  it("shows the programs that can add more, read from the catalog with only provider ids", async () => {
+    const state = mkdtempSync(join(tmpdir(), "psr-check-state-"));
+    const { fetch, calls } = mockFetch({ ...success, "https://programscape.com/api/router/programs": ok(fixture("programscape-programs")) });
+    const { streams, out } = io();
+    const env = { FIRECRAWL_API_KEY: KEYS.FIRECRAWL_API_KEY, TAVILY_API_KEY: KEYS.TAVILY_API_KEY, XDG_STATE_HOME: state };
+    expect(await main(["check"], streams, { env, fetch, config: {} })).toBe(0);
+    const catalogCalls = calls.filter((call) => new URL(call.url).host === "programscape.com");
+    expect(catalogCalls.map((call) => call.url)).toEqual(["https://programscape.com/api/router/programs?providers=firecrawl,tavily"]);
+    const text = out.join("");
+    expect(text).toContain("Programs that can add more (Programscape's public catalog; each provider decides who qualifies)");
+    expect(text).toContain(
+      "  Firecrawl: Claude for Startups: Firecrawl perk; Firecrawl startup deal (Ask Firecrawl). More: https://programscape.com/extend/firecrawl",
+    );
+    expect(text).toContain("  Tavily: no Tavily startup program in the catalog today; other providers that do the same job: https://programscape.com/extend/tavily");
+
+    // --json carries the short version too, and still nothing a provider wrote.
+    const json = io();
+    expect(await main(["check", "--json"], json.streams, { env, fetch, config: {} })).toBe(0);
+    const report = JSON.parse(json.out.join(""));
+    expect(report.programs.map((entry: { provider: { id: string } }) => entry.provider.id)).toEqual(["firecrawl", "tavily"]);
+    expect(report.programs[0]).not.toHaveProperty("sameJob");
+    expectNoContent(json.out.join(""));
+    // The second check the same day used the cached list.
+    expect(calls.filter((call) => new URL(call.url).host === "programscape.com")).toHaveLength(1);
+  });
+
+  it("says nothing about programs when the catalog is off in config or the environment", async () => {
+    for (const [env, config] of [
+      [{ TAVILY_API_KEY: "t", PROGRAMSCAPE_ROUTER_CATALOG: "off" }, {}],
+      [{ TAVILY_API_KEY: "t" }, { programscape: { catalog: false } }],
+    ] as const) {
+      const { fetch, calls } = mockFetch({ ...success, "https://programscape.com/api/router/programs": ok(fixture("programscape-programs")) });
+      const { streams, out } = io();
+      expect(await main(["check"], streams, { env: { ...env, XDG_STATE_HOME: mkdtempSync(join(tmpdir(), "psr-check-state-")) }, fetch, config })).toBe(0);
+      expect(calls.some((call) => call.url.includes("programscape"))).toBe(false);
+      expect(out.join("")).not.toContain("Programs that can add more");
+    }
+  });
+
+  it("shows the runway estimate from earlier readings, in words only", async () => {
+    const state = mkdtempSync(join(tmpdir(), "psr-check-state-"));
+    const env = { FIRECRAWL_API_KEY: KEYS.FIRECRAWL_API_KEY, XDG_STATE_HOME: state };
+    const read = (remaining: number) => ok({ success: true, data: { remainingCredits: remaining, planCredits: 100000 } });
+    // Readings at 0, 12 and 48 hours: no pace until they span a day; then 10000 used a day leaves 50000, so 5 days.
+    const days = [70000, 65000, 50000];
+    const hours = [0, 12, 48];
+    let index = 0;
+    // The adapter stamps each balance with the time it was read, so the clock moves a day per check.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (const remaining of days) {
+        const at = new Date("2026-10-10T12:00:00Z").getTime() + (hours[index] as number) * 3_600_000;
+        vi.setSystemTime(at);
+        const { fetch } = mockFetch({ ...success, [URLS.firecrawlCredits]: read(remaining) });
+        const { streams, out } = io();
+        await main(["check"], streams, { env, fetch, config: {}, catalogPath: false, now: () => new Date(at) });
+        if (index === days.length - 1) {
+          expect(out.join("")).toContain("  runway   About 5 days left on Firecrawl at your recent pace (estimate)");
+        } else {
+          expect(out.join("")).not.toContain("  runway   ");
+        }
+        index += 1;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,7 +1,8 @@
 /**
  * The routing order. A pure, deterministic function of the founder's own facts:
  * which keys are set, the balances providers reported for those keys, the credits the
- * founder entered, and what happened earlier in this session. Nothing here judges quality.
+ * founder entered (in config, or as dates on their Programscape plan when connected; a config date wins),
+ * and what happened earlier in this session. Nothing here judges quality.
  *
  * Default rule, "credits ending first":
  *   1. Providers whose credits carry an end date, soonest end date first.
