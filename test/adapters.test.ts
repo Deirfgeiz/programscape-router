@@ -50,7 +50,9 @@ describe("Exa", () => {
     });
     const error = await failure(ADAPTERS.exa.scrape!({ url: "https://example.com/" }, ctx(fetch)));
     expect(error.outcome).toBe("fetch_failed");
-    expect(error.message).toContain("CRAWL_TIMEOUT");
+    expect(error.message).toBe("Exa could not fetch the page (CRAWL_TIMEOUT); the page answered HTTP 408");
+    // The target page's status is not Exa's own HTTP status.
+    expect(error.status).toBeUndefined();
   });
 
   it("reads 402 NO_MORE_CREDITS as exhausted and a content-policy 403 as rejected", async () => {
@@ -58,8 +60,15 @@ describe("Exa", () => {
     expect((await failure(ADAPTERS.exa.search!({ query: "q" }, ctx(credits.fetch)))).outcome).toBe("exhausted");
     const policy = mockFetch({ [URLS.exaSearch]: status(403, { requestId: "r", error: "blocked", tag: "PROHIBITED_CONTENT" }) });
     expect((await failure(ADAPTERS.exa.search!({ query: "q" }, ctx(policy.fetch)))).outcome).toBe("rejected");
-    const key = mockFetch({ [URLS.exaSearch]: status(403, { requestId: "r", error: "disabled", tag: "FEATURE_DISABLED" }) });
+    // FEATURE_DISABLED: the endpoint is not on the plan. The key is fine, so the provider is not switched off.
+    const feature = mockFetch({ [URLS.exaSearch]: status(403, { requestId: "r", error: "disabled", tag: "FEATURE_DISABLED" }) });
+    const disabled = await failure(ADAPTERS.exa.search!({ query: "q" }, ctx(feature.fetch)));
+    expect(disabled.outcome).toBe("provider_error");
+    expect(disabled.message).toBe("disabled (FEATURE_DISABLED)");
+    const key = mockFetch({ [URLS.exaSearch]: status(401, { requestId: "r", error: "Invalid API key", tag: "INVALID_API_KEY" }) });
     expect((await failure(ADAPTERS.exa.search!({ query: "q" }, ctx(key.fetch)))).outcome).toBe("unauthorized");
+    const team = mockFetch({ [URLS.exaSearch]: status(402, { requestId: "r", error: "Team budget exceeded", tag: "TEAM_BUDGET_EXCEEDED" }) });
+    expect((await failure(ADAPTERS.exa.search!({ query: "q" }, ctx(team.fetch)))).outcome).toBe("exhausted");
   });
 
   it("clamps maxResults to Exa's maximum", async () => {
@@ -187,7 +196,10 @@ describe("Parallel", () => {
     const fetchError = mockFetch({
       [URLS.parallelExtract]: ok({ results: [], errors: [{ url: "u", error_type: "fetch_error", http_status_code: 500, content: "x" }] }),
     });
-    expect((await failure(ADAPTERS.parallel.scrape!({ url: "https://e.com" }, ctx(fetchError.fetch)))).outcome).toBe("fetch_failed");
+    const fetchFailed = await failure(ADAPTERS.parallel.scrape!({ url: "https://e.com" }, ctx(fetchError.fetch)));
+    expect(fetchFailed.outcome).toBe("fetch_failed");
+    expect(fetchFailed.message).toBe("Parallel could not fetch the page (fetch_error); the page answered HTTP 500");
+    expect(fetchFailed.status).toBeUndefined();
     const spent = mockFetch({ [URLS.parallelSearch]: status(402, { error: { message: "Insufficient credit in account", detail: {} } }) });
     const error = await failure(ADAPTERS.parallel.search!({ query: "q" }, ctx(spent.fetch)));
     expect(error.outcome).toBe("exhausted");

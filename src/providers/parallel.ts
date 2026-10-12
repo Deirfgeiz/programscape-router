@@ -1,7 +1,7 @@
 /**
  * Parallel adapter.
  *
- * Official docs (re-read 2026-10-11; the OpenAPI schema is in each page's .md source):
+ * Official docs (re-read 2026-10-11 for 1.0; the OpenAPI schema is in each page's .md source):
  * - Search:  https://docs.parallel.ai/api-reference/search/search    (POST https://api.parallel.ai/v1/search)
  *   Request fields sent, all from V1SearchRequest (additionalProperties: false):
  *     objective, search_queries (required), advanced_settings -> AdvancedSearchSettings.max_results
@@ -10,9 +10,12 @@
  *   Request fields sent, all from V1ExtractRequest (additionalProperties: false):
  *     urls (required), advanced_settings -> AdvancedExtractSettings.full_content
  *     ("Set to true to enable with defaults"; the result's full_content is "formatted as markdown, if requested")
- * - Errors:  https://docs.parallel.ai/resources/warnings-and-errors  (402 = insufficient credit in account)
+ *   Per-URL failures come back in `errors` (ExtractError: url, error_type, http_status_code of the target page,
+ *   content). Only error_type and the target's status are reported; `content` is never read.
+ * - Errors:  https://docs.parallel.ai/resources/warnings-and-errors  (402 = insufficient credit in account;
+ *   error bodies are { "type": "error", "error": { "ref_id", "message" } })
  *
- * Not yet exercised against the live API with a real key. The router also trims results to the
+ * Not yet exercised against the live API with a real key (`programscape-router check` does). The router also trims results to the
  * requested count, so maxResults holds even if a provider returns more.
  * Parallel publishes no balance endpoint, so balances come only from the founder's config.
  */
@@ -87,11 +90,10 @@ export const parallel: ProviderAdapter = {
     const markdown = result && typeof result.full_content === "string" ? result.full_content : undefined;
     if (!result || markdown === undefined) {
       const error = asArray(body.errors).find(isRecord);
-      throw new ProviderCallError(
-        "fetch_failed",
-        error && str(error.error_type) ? `Parallel could not fetch the page (${str(error.error_type)})` : "Parallel could not fetch the page",
-        error && typeof error.http_status_code === "number" ? error.http_status_code : undefined,
-      );
+      const type = error ? str(error.error_type) : undefined;
+      // http_status_code is the target page's status, not Parallel's, so it goes in the message rather than `status`.
+      const target = error && typeof error.http_status_code === "number" ? `; the page answered HTTP ${error.http_status_code}` : "";
+      throw new ProviderCallError("fetch_failed", `Parallel could not fetch the page${type ? ` (${type})` : ""}${target}`);
     }
     const title = str(result.title);
     return { url: str(result.url) ?? req.url, ...(title ? { title } : {}), markdown };

@@ -1,7 +1,7 @@
 /**
  * Firecrawl adapter (API v2).
  *
- * Official docs (read 2026-10-11):
+ * Official docs (re-read 2026-10-11 for 1.0):
  * - Search:       https://docs.firecrawl.dev/api-reference/endpoint/search        (POST https://api.firecrawl.dev/v2/search)
  * - Scrape:       https://docs.firecrawl.dev/api-reference/endpoint/scrape        (POST https://api.firecrawl.dev/v2/scrape)
  * - Credit usage: https://docs.firecrawl.dev/api-reference/endpoint/credit-usage  (GET  https://api.firecrawl.dev/v2/team/credit-usage)

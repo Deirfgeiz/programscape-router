@@ -1,14 +1,17 @@
 /**
  * Keenable adapter.
  *
- * Official docs (read 2026-10-11):
+ * Official docs (re-read 2026-10-11 for 1.0):
  * - Search:         https://docs.keenable.ai/api-reference/search  (POST https://api.keenable.ai/v1/search)
  * - Fetch:          https://docs.keenable.ai/api-reference/fetch   (GET  https://api.keenable.ai/v1/fetch?url=...)
- * - Error statuses: https://docs.keenable.ai/authentication        (400 malformed key, 401 missing or invalid key,
+ * - Error statuses: https://docs.keenable.ai/authentication#error-responses (400 malformed key, 401 missing or invalid key,
  *                   402 monthly allowance spent and no purchased credits, 403 key disabled or revoked, 429 rate limit)
  *
  * Keenable shows the remaining allowance only in its web console, so balances come only from the founder's config.
- * Fetch is called with `live=true`, because by default only pages already in Keenable's index can be fetched.
+ * Fetch is called with `live=true`: "By default, only URLs that Keenable indexes are supported", and `live=true`
+ * fetches from the source instead, including pages not in the index (billed as the `fetch.live` SKU,
+ * https://docs.keenable.ai/credits). Fetch returns at most `max_chars` characters (default 50,000); longer pages
+ * are truncated by Keenable.
  */
 import type { Outcome } from "../types.js";
 import {
