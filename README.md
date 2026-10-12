@@ -479,7 +479,7 @@ To show it, the router reads Programscape's public catalog on its own:
   providers you have a key set for, with a `programscape-router/<version>` User-Agent. No key, query, URL, balance,
   token or identifier, and no cookie. Like every call to Programscape, it goes only to `https://programscape.com`,
   never follows a redirect, and gives up after 3 seconds. Like any web request, it reaches programscape.com from your
-  IP address, which the site's hosting may log for a short time; Programscape doesn't tie it to the request or keep it.
+  IP address, which the site's hosting provider logs for a limited time; the catalog endpoint itself doesn't read or store it.
 - **How often:** at most once a day, and again the same day only when you add a key for a provider that day's read
   didn't ask about. A failed read counts, so an unreachable catalog costs one short attempt a day. The answer is kept
   in [`catalog.json`](#local-files); after a failed read, the last list is shown for up to a week.
