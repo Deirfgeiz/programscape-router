@@ -38,7 +38,7 @@ its source file.
 Once it is on npm, nothing to install: `npx programscape-router` runs the latest version.
 
 Until then, run it from GitHub: use `npx github:Deirfgeiz/programscape-router` wherever this page says
-`npx programscape-router`. It builds itself on install. Node 20 or later.
+`npx programscape-router`. It builds itself on install. Node 22 or later.
 
 ## Quick check
 
@@ -341,7 +341,7 @@ npm run build
 npm run smoke:pack   # packs the tarball, installs it in a temp project, imports it and type-checks it
 ```
 
-CI runs the first four on Node 20, 22 and 24, and the pack smoke test on Node 20 and 24.
+CI runs the first four, and the pack smoke test, on Node 22 and 24.
 
 ## License
 

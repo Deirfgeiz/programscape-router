@@ -22,6 +22,8 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
 
 ### Changed
 
+- Requires Node 22 or later (`engines.node` is `>=22`). Node 20 reached end of life on April 30, 2026, so 1.0 does
+  not promise it. CI runs on Node 22 and 24.
 - Exa `403 FEATURE_DISABLED` (the endpoint or option is not on the plan) is now a `provider_error` for that call, not
   `unauthorized`. The key is fine, so Exa is no longer switched off for the session, and the other capability keeps
   working.
