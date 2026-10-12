@@ -80,10 +80,14 @@ export function mapProgram(provider: ProviderId, programs: PlanProgram[], overri
         `so the router won't guess. Set ${CONFIG_HINT(provider)} in config to the one this balance belongs to.`,
     };
   }
-  const waiting = fromProvider.length > 0 ? ` (${fromProvider.map((program) => program.id).join(", ")} is kept but not approved yet)` : "";
+  const waiting = fromProvider.map((program) => program.id).join(", ");
   return {
     kind: "unmapped",
-    message: `Your plan has no kept, approved ${name} program${waiting}. Keep it on programscape.com once it's approved, or set ${CONFIG_HINT(provider)} in config.`,
+    message: waiting
+      ? `Your plan has no kept, approved ${name} program: ${waiting} ${fromProvider.length > 1 ? "are" : "is"} kept but not marked approved. ` +
+        `Mark it approved on your plan at https://programscape.com/plans once ${name} says yes, or set ${CONFIG_HINT(provider)} in config.`
+      : `Your plan has no kept, approved ${name} program. Keep the program this balance belongs to on your plan and mark it approved ` +
+        `once ${name} says yes, or set ${CONFIG_HINT(provider)} in config.`,
   };
 }
 

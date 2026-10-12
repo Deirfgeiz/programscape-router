@@ -207,7 +207,7 @@ describe("mapping a provider's balance to a plan program", () => {
     const none = mapProgram("tavily", plan(FIRECRAWL_ONE));
     expect(none.kind === "unmapped" && none.message).toContain("no kept, approved Tavily program");
     const waiting = mapProgram("firecrawl", plan([{ id: "firecrawl.startup-deal", provider: "firecrawl" }]));
-    expect(waiting.kind === "unmapped" && waiting.message).toContain("firecrawl.startup-deal is kept but not approved yet");
+    expect(waiting.kind === "unmapped" && waiting.message).toContain("firecrawl.startup-deal is kept but not marked approved. Mark it approved on your plan at https://programscape.com/plans");
   });
 
   it("follows the config override, only to a kept, approved program from that provider", () => {
