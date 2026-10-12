@@ -1,11 +1,19 @@
 /**
  * Parallel adapter.
  *
- * Official docs (read 2026-10-11):
+ * Official docs (re-read 2026-10-11; the OpenAPI schema is in each page's .md source):
  * - Search:  https://docs.parallel.ai/api-reference/search/search    (POST https://api.parallel.ai/v1/search)
+ *   Request fields sent, all from V1SearchRequest (additionalProperties: false):
+ *     objective, search_queries (required), advanced_settings -> AdvancedSearchSettings.max_results
+ *     ("Upper bound on the number of results to return. Defaults to 10 if not provided.")
  * - Extract: https://docs.parallel.ai/api-reference/extract/extract  (POST https://api.parallel.ai/v1/extract)
+ *   Request fields sent, all from V1ExtractRequest (additionalProperties: false):
+ *     urls (required), advanced_settings -> AdvancedExtractSettings.full_content
+ *     ("Set to true to enable with defaults"; the result's full_content is "formatted as markdown, if requested")
  * - Errors:  https://docs.parallel.ai/resources/warnings-and-errors  (402 = insufficient credit in account)
  *
+ * Not yet exercised against the live API with a real key. The router also trims results to the
+ * requested count, so maxResults holds even if a provider returns more.
  * Parallel publishes no balance endpoint, so balances come only from the founder's config.
  */
 import {

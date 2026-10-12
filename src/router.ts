@@ -289,7 +289,8 @@ export function createRouter(options: RouterOptions = {}): Router {
         (adapter, ctx) => (adapter.search as NonNullable<ProviderAdapter["search"]>)({ ...request, query }, ctx),
         timeoutMs ?? DEFAULT_TIMEOUT_MS,
       );
-      return { results: value, routing };
+      // Each adapter asks for at most this many; trimming here keeps the cap even if a provider ignores it.
+      return { results: value.slice(0, request.maxResults ?? 10), routing };
     },
 
     async scrape(request) {

@@ -35,7 +35,7 @@ describe("cli", () => {
     });
     expect(code).toBe(0);
     const text = out.join("");
-    expect(text).toContain('1. firecrawl: Credits ending first: "Firecrawl credits, current billing period" (under 1% remaining) ends 2026-10-31.');
+    expect(text).toContain('1. firecrawl: Credits ending first: "Firecrawl credits, current billing period" (under 1% remaining) ends 2026-10-31 23:59:59 UTC.');
     expect(text).toContain('2. exa: Credits ending first: "Exa startup grant" (60% remaining) ends 2027-03-01.');
     expect(text).toContain('3. tavily: Credits with no known end date: "Tavily plan credits (Bootstrap)" (97% remaining).');
     expect(text).toContain('"Exa startup grant" (credits): 600 of 1000 usd remaining, ends 2027-03-01, from your config');

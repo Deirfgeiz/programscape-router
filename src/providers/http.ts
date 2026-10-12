@@ -59,7 +59,7 @@ export interface RequestOptions {
   errorMessage?: (body: unknown) => string | undefined;
 }
 
-/** One JSON request with a timeout. Throws ProviderCallError on every failure. */
+/** One JSON request with a timeout, never following redirects. Throws ProviderCallError on every failure. */
 export async function requestJson(ctx: CallContext, url: string, options: RequestOptions): Promise<unknown> {
   const init: RequestInit = {
     method: options.method ?? (options.body === undefined ? "GET" : "POST"),
@@ -69,6 +69,9 @@ export async function requestJson(ctx: CallContext, url: string, options: Reques
       ...options.headers,
     },
     signal: AbortSignal.timeout(ctx.timeoutMs),
+    // Never follow a redirect: fetch would re-send custom key headers such as x-api-key to whatever
+    // host the Location names. A redirect is reported as a provider error instead.
+    redirect: "manual",
   };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
 
@@ -78,6 +81,15 @@ export async function requestJson(ctx: CallContext, url: string, options: Reques
   } catch (error) {
     if (isTimeout(error)) throw new ProviderCallError("timeout", `No answer within ${ctx.timeoutMs} ms`);
     throw new ProviderCallError("network_error", "Could not reach the provider");
+  }
+
+  if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new ProviderCallError(
+      "provider_error",
+      "The provider answered with a redirect, which is not followed so the key never leaves the provider's own API",
+      response.status || undefined,
+    );
   }
 
   let body: unknown;

@@ -9,6 +9,7 @@
  *   3. Pay-as-you-go: every known credit is spent or ended, or none is known and the provider is
  *      marked `paid: true`. Credits the founder still holds are always spent before paid usage,
  *      even on a provider marked `paid: true`.
+ *   End dates are compared by exact end instant (a bare date ends at the end of that UTC day).
  *   Ties: the larger share remaining (remaining / plan or award, only where both are known)
  *   goes first, providers with a known share before those without; then provider id.
  *   Amounts in different units are never compared or added.
@@ -54,7 +55,8 @@ export interface CapabilityOrder {
 interface Placement {
   tier: Tier;
   basis: string;
-  endDay?: string;
+  /** When the credits stop being usable (ms since epoch); compared exactly, never by day. */
+  endAt?: number;
   endsOn?: string;
   share?: number;
 }
@@ -67,10 +69,11 @@ export function endInstant(endsOn: string): number {
   return Date.parse(endsOn);
 }
 
-/** The UTC calendar day credits end on, used to compare end dates. */
-export function endDay(endsOn: string): string {
+/** How an end date reads in a reason: a bare date as given, a date-time to the second in UTC. */
+export function formatEnd(endsOn: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(endsOn)) return endsOn;
-  return new Date(Date.parse(endsOn)).toISOString().slice(0, 10);
+  const iso = new Date(Date.parse(endsOn)).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 19)} UTC`;
 }
 
 export function shareRemaining(balance: Balance): number | undefined {
@@ -130,12 +133,11 @@ export function place(standing: ProviderStanding, now: Date): Placement | { skip
     );
   const soonest = ending[0];
   if (soonest?.endsOn) {
-    const day = endDay(soonest.endsOn);
     const share = shareRemaining(soonest);
     return {
       tier: "credits-ending",
-      basis: `Credits ending first: ${describe(soonest)} ends ${day}.`,
-      endDay: day,
+      basis: `Credits ending first: ${describe(soonest)} ends ${formatEnd(soonest.endsOn)}.`,
+      endAt: endInstant(soonest.endsOn),
       endsOn: soonest.endsOn,
       ...(share !== undefined ? { share } : {}),
     };
@@ -175,7 +177,7 @@ export function place(standing: ProviderStanding, now: Date): Placement | { skip
 function tieNote(prev: { id: ProviderId; placement: Placement }, cur: { placement: Placement }): string {
   const what =
     cur.placement.tier === "credits-ending"
-      ? `on end date (${cur.placement.endDay})`
+      ? `on end time (${cur.placement.endsOn ? formatEnd(cur.placement.endsOn) : "unknown"})`
       : cur.placement.tier === "credits-no-end-date"
         ? "with no known end date"
         : "as pay-as-you-go";
@@ -254,8 +256,9 @@ export function computeOrder(
   placed.sort((a, b) => {
     const tier = TIER_RANK[a.placement.tier] - TIER_RANK[b.placement.tier];
     if (tier !== 0) return tier;
-    if (a.placement.endDay && b.placement.endDay && a.placement.endDay !== b.placement.endDay) {
-      return a.placement.endDay < b.placement.endDay ? -1 : 1;
+    // Soonest end first, by exact instant: two credits ending on the same day at different times are not a tie.
+    if (a.placement.endAt !== undefined && b.placement.endAt !== undefined && a.placement.endAt !== b.placement.endAt) {
+      return a.placement.endAt - b.placement.endAt;
     }
     return compareShare(a.placement.share, b.placement.share) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   });
@@ -265,7 +268,7 @@ export function computeOrder(
     const tied =
       prev !== undefined &&
       prev.placement.tier === item.placement.tier &&
-      prev.placement.endDay === item.placement.endDay;
+      prev.placement.endAt === item.placement.endAt;
     return {
       provider: item.id,
       position: index + 1,

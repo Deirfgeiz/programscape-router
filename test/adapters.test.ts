@@ -298,3 +298,35 @@ describe("shared HTTP handling", () => {
     }
   });
 });
+
+describe("Parallel request contract", () => {
+  // Property names copied from the OpenAPI schema in the cited references (read 2026-10-11).
+  // Both request objects and both advanced-settings objects declare additionalProperties: false,
+  // so an undocumented field would be rejected with a 422.
+  const V1SearchRequest = ["objective", "search_queries", "mode", "max_chars_total", "session_id", "client_model", "advanced_settings"];
+  const AdvancedSearchSettings = ["source_policy", "fetch_policy", "excerpt_settings", "location", "max_results"];
+  const V1ExtractRequest = ["urls", "objective", "search_queries", "max_chars_total", "session_id", "client_model", "advanced_settings"];
+  const AdvancedExtractSettings = ["fetch_policy", "excerpt_settings", "full_content"];
+
+  function keysOf(value: unknown): string[] {
+    return Object.keys(value as Record<string, unknown>);
+  }
+
+  it("sends only documented search fields, with search_queries present", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.parallelSearch]: ok(fixture("parallel-search")) });
+    await ADAPTERS.parallel.search!({ query: "q", maxResults: 4 }, ctx(fetch));
+    const body = calls[0]?.body as { search_queries: unknown; advanced_settings: unknown };
+    for (const key of keysOf(body)) expect(V1SearchRequest).toContain(key);
+    for (const key of keysOf(body.advanced_settings)) expect(AdvancedSearchSettings).toContain(key);
+    expect(body.search_queries).toEqual(["q"]);
+  });
+
+  it("sends only documented extract fields, with urls present", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.parallelExtract]: ok(fixture("parallel-extract")) });
+    await ADAPTERS.parallel.scrape!({ url: "https://www.example.com" }, ctx(fetch));
+    const body = calls[0]?.body as { urls: unknown; advanced_settings: unknown };
+    for (const key of keysOf(body)) expect(V1ExtractRequest).toContain(key);
+    for (const key of keysOf(body.advanced_settings)) expect(AdvancedExtractSettings).toContain(key);
+    expect(body.urls).toEqual(["https://www.example.com"]);
+  });
+});

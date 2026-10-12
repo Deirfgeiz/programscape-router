@@ -5,6 +5,7 @@ export interface RecordedCall {
   method: string;
   headers: Record<string, string>;
   body: unknown;
+  redirect: RequestInit["redirect"];
 }
 
 export type Responder = (call: RecordedCall) => Response | Promise<Response>;
@@ -30,6 +31,7 @@ export function mockFetch(routes: Record<string, Responder | Responder[]>) {
       method: init.method ?? "GET",
       headers,
       body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
+      redirect: init.redirect,
     };
     calls.push(call);
     const prefix = Object.keys(routes)

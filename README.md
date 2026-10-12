@@ -13,7 +13,8 @@ credits, including programs from these providers.
 ## Your keys stay on your machine
 
 - Keys are read only from your environment. A provider is switched on only when its key is set.
-- Each key is sent only to its own provider's API, and nowhere else.
+- Each key is sent only to its own provider's API, and nowhere else. Redirects are never followed, so a key can't
+  be carried to another host.
 - Keys are never logged and never written to disk by the router.
 - The router makes no call to Programscape and has no telemetry.
 - Your queries, URLs and page content are never logged or saved. The local ledger keeps counts only.
@@ -110,9 +111,10 @@ Every result says which provider served it and why:
 2. Then providers whose credits have no known end date. A provider you've told the router nothing about goes here.
 3. Pay-as-you-go comes last: a provider whose known credits are all spent or ended, or one you mark `"paid": true` with no credits left that the router knows of. Credits you still hold are always spent before paid usage.
 
-Ties go to the larger share remaining (remaining divided by the plan or award, only where both are known; a known
-share goes before an unknown one), then to the provider id, alphabetically. Amounts in different units are never
-compared, and never added up. A provider that reported its credits spent is skipped.
+End dates are compared to the exact time, so credits ending at 09:00 go before credits ending at 23:59 the same
+day; a date without a time lasts through the end of that day, UTC. Ties go to the larger share remaining (remaining
+divided by the plan or award, only where both are known; a known share goes before an unknown one), then to the
+provider id, alphabetically. Amounts in different units are never compared, and never added up. A provider that reported its credits spent is skipped.
 
 The order is a fixed rule over your own credits and dates. It does not rank providers on quality, and no provider
 can pay to move up.

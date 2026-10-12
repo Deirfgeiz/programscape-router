@@ -68,7 +68,7 @@ describe("routing", () => {
     );
     const response = await router.search({ query: "q" });
     expect(response.routing.provider).toBe("firecrawl");
-    expect(response.routing.reason).toBe('Credits ending first: "Firecrawl credits, current billing period" (under 1% remaining) ends 2026-10-31.');
+    expect(response.routing.reason).toBe('Credits ending first: "Firecrawl credits, current billing period" (under 1% remaining) ends 2026-10-31 23:59:59 UTC.');
   });
 
   it("follows the founder's order", async () => {
@@ -293,5 +293,18 @@ describe("status", () => {
     expect(status.providers.find((p) => p.id === "exa")?.balanceNote).toContain("publishes no balance endpoint");
     expect(status.order.search.entries.map((e) => e.provider)).toEqual(["firecrawl", "exa", "tavily"]);
     expect(JSON.stringify(status)).not.toMatch(/total(Credits|Balance)|combined|sum/i);
+  });
+});
+
+describe("result cap", () => {
+  it("trims results to maxResults even when a provider returns more", async () => {
+    const many = { results: Array.from({ length: 7 }, (_, i) => ({ url: `https://example.com/${i}`, title: `r${i}` })) };
+    const { router } = setup({ [URLS.parallelSearch]: ok(many) }, { PARALLEL_API_KEY: "p" });
+    expect((await router.search({ query: "q", maxResults: 3 })).results.map((r) => r.url)).toEqual([
+      "https://example.com/0",
+      "https://example.com/1",
+      "https://example.com/2",
+    ]);
+    expect((await router.search({ query: "q" })).results).toHaveLength(7);
   });
 });

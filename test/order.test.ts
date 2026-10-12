@@ -39,7 +39,7 @@ describe("credits ending first", () => {
       "credits-no-end-date",
       "pay-as-you-go",
     ]);
-    expect(order.entries[0]?.reason).toBe('Credits ending first: "Firecrawl period" ends 2026-10-31.');
+    expect(order.entries[0]?.reason).toBe('Credits ending first: "Firecrawl period" ends 2026-10-31 23:59:59 UTC.');
     expect(order.entries[3]?.reason).toContain("Nothing is known about its credits");
     expect(order.entries[4]?.reason).toContain("Marked paid in your config");
     expect(order.entries.map((entry) => entry.position)).toEqual([1, 2, 3, 4, 5]);
@@ -137,18 +137,54 @@ describe("credits ending first", () => {
 });
 
 describe("ties", () => {
-  it("breaks a same-day end date by the larger share remaining", () => {
+  it("breaks an identical end time by the larger share remaining", () => {
     const order = computeOrder(
       "search",
       [
         standing("exa", { balances: [credit({ endsOn: "2026-11-01", remaining: 100, total: 1000, unit: "usd" })] }),
-        standing("tavily", { balances: [credit({ endsOn: "2026-11-01T08:00:00Z", remaining: 900, total: 1000, unit: "credits" })] }),
+        // A bare date ends at the end of that UTC day, the same instant as midnight that follows it.
+        standing("tavily", { balances: [credit({ endsOn: "2026-11-02T00:00:00Z", remaining: 900, total: 1000, unit: "credits" })] }),
       ],
       undefined,
       NOW,
     );
     expect(ids(order)).toEqual(["tavily", "exa"]);
-    expect(order.entries[1]?.reason).toContain("Tied with tavily on end date (2026-11-01); tavily has the larger share remaining (90% vs 10%).");
+    expect(order.entries[1]?.reason).toBe(
+      'Credits ending first: "credits" (10% remaining) ends 2026-11-01. Tied with tavily on end time (2026-11-01); tavily has the larger share remaining (90% vs 10%).',
+    );
+  });
+
+  it("orders two end times on the same day by time, not by share", () => {
+    const order = computeOrder(
+      "search",
+      [
+        // Ends later that day, with the larger share remaining.
+        standing("exa", { balances: [credit({ label: "Exa grant", endsOn: "2026-10-31T23:59:00Z", remaining: 900, total: 1000 })] }),
+        // Ends at 09:00 the same day, with the smaller share remaining: it must still go first.
+        standing("firecrawl", {
+          balances: [credit({ label: "Firecrawl period", endsOn: "2026-10-31T09:00:00Z", remaining: 10, total: 1000, source: "provider" })],
+        }),
+      ],
+      undefined,
+      NOW,
+    );
+    expect(ids(order)).toEqual(["firecrawl", "exa"]);
+    expect(order.entries[0]?.reason).toBe('Credits ending first: "Firecrawl period" (1% remaining) ends 2026-10-31 09:00:00 UTC.');
+    expect(order.entries[1]?.reason).toBe('Credits ending first: "Exa grant" (90% remaining) ends 2026-10-31 23:59:00 UTC.');
+    expect(order.entries[1]?.reason).not.toContain("Tied");
+  });
+
+  it("puts a date-time ending earlier on the same day before a bare date", () => {
+    const order = computeOrder(
+      "search",
+      [
+        standing("exa", { balances: [credit({ endsOn: "2026-10-31", remaining: 900, total: 1000 })] }),
+        standing("tavily", { balances: [credit({ endsOn: "2026-10-31T23:59:59Z", remaining: 1, total: 1000 })] }),
+      ],
+      undefined,
+      NOW,
+    );
+    expect(ids(order)).toEqual(["tavily", "exa"]);
   });
 
   it("compares shares, never raw amounts in different units", () => {
