@@ -481,12 +481,16 @@ npx programscape-router disconnect   # revokes the router's access and deletes t
 `connect` prints the sign-in link too, so it works on a machine without a browser (`--no-browser` skips opening
 one). It listens on `127.0.0.1` only for the redirect, so no firewall asks to open a port.
 
-To connect again, run `programscape-router disconnect` first. A second `connect` stops before contacting Programscape
-while a token or connection marker remains, even if the keychain temporarily cannot be reached. The marker contains
-no token or personal data; it records whether this connection might have used the keychain, whether sync is off, and
-whether Programscape may hold a token pair the router could not save. Connect, disconnect
-and token refreshes use a local lock, so they cannot change a grant at the same time. Ctrl+C or a crash can leave a
-stale lock; the CLI shows its path. Delete it only after checking that no router connection change is still running.
+To connect again, run `programscape-router disconnect` first, including when an old sign-in has expired. A second
+`connect` stops before contacting Programscape while a token or connection record remains, even if the keychain
+temporarily cannot be reached. The record contains no token or personal data. It has one lifecycle state:
+`awaiting-consent` (the browser sign-in is pending), `connected`, `sync-off` (the sign-in was refused), or
+`cleanup-needed` (a change was interrupted or its remote result is uncertain); it also records whether the keychain
+may hold a grant. No record means `disconnected`. Connect, disconnect and token refreshes use local lock entries
+around connection changes. The lock is released while `connect` waits for the browser, but the pending attempt
+stays recorded. Running `disconnect` then cancels that attempt. Ctrl+C and other termination signals remove a held
+entry where possible; a later command ignores an entry whose process has died. An incomplete entry without an
+owner expires after two minutes.
 
 The tokens go in your OS keychain, beside your provider keys (service `programscape-router`, account
 `programscape-token`), and `connect` says so. If the optional keychain module is missing, no keychain backend exists,
@@ -516,18 +520,22 @@ then reads both stores back. It prints what happened in each place:
 
 ```text
 Disconnect from Programscape:
-  Programscape: revoked the router's access
+  Programscape: revoked the known router tokens
   OS keychain: deleted
   token file: none there
-Disconnected: no token is left on this machine, and Programscape revoked it.
+Disconnected: local tokens removed and known Programscape tokens revoked.
 ```
 
-It exits 0 only when the tokens are revoked and every store this connection could have used is verified empty. A
-file-only connection made without a keychain backend can disconnect successfully without one: its nonsecret marker
-records that it never attempted a keychain write. If the keychain may hold this connection's token but cannot be
-checked, `disconnect` exits 1 and gives manual checks. It also exits 1 when removal or remote revocation fails.
-A saved off state stays in place after a failed disconnect; resolve the reported failure and retry `disconnect`
-before `connect`. If the CLI cannot save that state while a token remains, it warns you:
+It exits 0 when the known tokens were revoked and every store this connection could have used is verified empty. A
+file-only connection made without a keychain backend can disconnect successfully without one: its nonsecret record
+shows that it never attempted a keychain write. If local removal cannot be verified, `disconnect` exits 1; unlock
+or repair the reported store and rerun `disconnect`. If local tokens are gone but remote revocation cannot be
+verified, it clears the local connection, exits 2, and asks you to check
+`programscape.com → My plans → connected apps` for `programscape-router`. You may then connect again. A token response
+lost during sign-in or refresh can leave an unknown remote grant; `disconnect` also clears local state and gives
+the same warning. Removing the router in connected apps is the way to revoke an unknown grant.
+
+If a local token cannot be removed, `disconnect` names the store and its entry so you can inspect it:
 
 - macOS: in Keychain Access, delete the item `programscape-router` with account `programscape-token`, or run
   `security delete-generic-password -s programscape-router -a programscape-token`.
@@ -537,13 +545,8 @@ before `connect`. If the CLI cannot save that state while a token remains, it wa
   `programscape-token`, or run `secret-tool clear service programscape-router username programscape-token`.
 - If Programscape didn't confirm the revocation, also remove the router's access on programscape.com.
 
-If a token entry was lost or corrupted, `disconnect` cannot revoke what it cannot read and leaves the connection
-marker in place. After removing the router's access on programscape.com and checking the OS keychain entry and token
-file named above, delete `programscape-connection.json` from the token directory (`~/.config/programscape-router`
-or `$XDG_CONFIG_HOME/programscape-router` on macOS/Linux, `%LOCALAPPDATA%\programscape-router` on Windows unless
-`XDG_CONFIG_HOME` is set). Then run
-`connect`. An uncertain sign-in response may leave this marker even when no token was saved; use the same recovery
-steps. The marker contains no token.
+If a token entry is corrupted, `disconnect` may remove it locally but cannot revoke a grant it cannot read. It
+reports the remote result as unverified and points you to connected apps. You do not need to edit router files.
 
 ### Which program a balance goes to
 

@@ -35,17 +35,18 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   older pair that `disconnect` still needs to revoke.
 - `connect` requires `disconnect` before another sign-in. A nonsecret connection marker keeps this rule in force
   even during a temporary keychain outage; it also records whether this grant could have used the keychain, so a
-  file-only connection can still be disconnected when no keychain backend exists. Connect, disconnect and refresh
-  rotations share a lock. A refused refresh turns sync off but retains the old pair for `disconnect` to revoke.
-  If a token response or rollback is uncertain, the marker prevents a later `disconnect` from claiming full remote
-  revocation and directs the founder to remove router access on programscape.com.
+  file-only connection can still be disconnected when no keychain backend exists. The marker has one lifecycle
+  state: awaiting-consent, connected, sync-off, or cleanup-needed; no marker means disconnected. A pending browser
+  sign-in is canceled by `disconnect`, and a second `connect` cannot start while it waits. Connect, disconnect and
+  refresh rotations use per-attempt lock entries; the browser wait holds none, and entries from dead processes are
+  ignored. A refused refresh turns sync off but retains the old pair for `disconnect` to revoke. A token response
+  or rollback that cannot be verified leads `disconnect` to clear local state and warn the founder to check
+  connected apps on programscape.com before another sign-in.
 - `disconnect` blocks later automatic sync attempts when local state can be saved (an in-flight call may finish),
-  revokes every readable token pair, reports the remote revocation, the
-  keychain and the token file separately, reads both stores back, and exits 1 unless the tokens are revoked and
-  both stores are verified empty. An inaccessible keychain is reported
-  as unverified, with manual checks; other failures name what is left and how to delete it by hand
-  (Keychain Access, Credential Manager or Secret Service entry names, and the matching `security`, `cmdkey` or
-  `secret-tool` command).
+  revokes every readable token pair, reports remote revocation and both local stores separately, and reads both
+  stores back. It exits 1 if local removal cannot be verified, 2 if local state was cleared but remote access is
+  unverified, or 0 after verified cleanup. It names the entry to inspect in an inaccessible keychain and directs
+  the founder to repair the store and rerun `disconnect`; no internal router file deletion is required.
 - Keychain errors never carry the native library's text: each operation prints a fixed message and a problem class
   (`no-secret-service`, `no-default-keychain`, `locked`, `access-denied`, `too-large`, `failed`). Redaction of keys
   and tokens in routing messages and `check --verbose` now covers secrets of any length.

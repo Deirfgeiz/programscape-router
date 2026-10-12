@@ -8,17 +8,17 @@ import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontex
 import { VERSION } from "../version.js";
 import { PROGRAMSCAPE_MCP_URL, ProgramscapeError } from "./guard.js";
 import { type GuardedFetch, discover, refresh, revoke } from "./oauth.js";
-import { type TokenFile, ConnectionLockError, markConnectionSyncOff, readConnectionMarker, readSyncState, readTokenFile, setRemoteGrantUncertain, withConnectionLock, writeTokenFile } from "./store.js";
+import { type TokenFile, ConnectionLockError, readConnectionState, readTokenFile, transitionConnection, withConnectionLock, writeTokenFile } from "./store.js";
 
 /** Refresh this long before the access token's end, so a call never starts with a token about to lapse. */
 const REFRESH_MARGIN_MS = 60_000;
 
 export const RECONNECT_MESSAGE =
   "Programscape sync is off: Programscape no longer accepts this router's sign-in (it expired or was revoked). " +
-  "Run `programscape-router disconnect`, then `programscape-router connect` to turn it back on.";
+  "Run `programscape-router disconnect`, then `programscape-router connect` to sign in again.";
 
 export const REMOTE_UNCERTAIN_MESSAGE =
-  "Programscape may have issued tokens that the router could not save. Remove the router's access on programscape.com and follow the manual connection-marker recovery instructions in the README before connecting again.";
+  "Programscape may have issued tokens that the router could not save. Run `programscape-router disconnect`; it clears local state and tells you how to check connected apps on programscape.com.";
 
 function sameGrant(a: TokenFile | undefined, b: TokenFile): boolean {
   return a?.clientId === b.clientId && a.accessToken === b.accessToken && a.refreshToken === b.refreshToken;
@@ -28,8 +28,6 @@ export interface ConnectionOptions {
   env: NodeJS.ProcessEnv;
   fetch: GuardedFetch;
   now: () => Date;
-  /** Called once when Programscape refuses the refresh. */
-  onRejected: () => Promise<void>;
 }
 
 export type CallTool = (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -63,7 +61,6 @@ function toolOutput(result: unknown): unknown {
 export class Connection {
   private readonly options: ConnectionOptions;
   private tokens: TokenFile | undefined;
-  private disabledGrant: TokenFile | undefined;
 
   constructor(options: ConnectionOptions) {
     this.options = options;
@@ -73,13 +70,11 @@ export class Connection {
   private async accessToken(force: boolean): Promise<string> {
     const { env, now } = this.options;
     const stored = await readTokenFile(env);
-    if (this.disabledGrant && stored && !sameGrant(stored, this.disabledGrant)) this.disabledGrant = undefined;
-    const marker = await readConnectionMarker(env);
-    if (marker?.remoteGrantUncertain) throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
-    if (this.disabledGrant || (await readSyncState(env)).off || marker?.syncOff) {
-      throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
-    }
+    const state = await readConnectionState(env);
+    if (state?.phase === "cleanup-needed") throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
+    if (state?.phase === "sync-off") throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
     if (!stored) throw new ProgramscapeError("rejected", "Programscape sync is not connected. Run `programscape-router connect`.");
+    if (state?.phase !== "connected") throw new ProgramscapeError("refused", "Programscape connection state needs repair. Run `programscape-router disconnect`.");
     // Another process may have rotated the tokens: reread the authoritative file, or the keychain if there is no file.
     this.tokens = stored;
     const endsAt = stored.expiresAt ? Date.parse(stored.expiresAt) : Number.NaN;
@@ -88,10 +83,9 @@ export class Connection {
     try {
       return await withConnectionLock(env, async () => {
         const current = await readTokenFile(env);
-        const state = await readSyncState(env);
-        const marker = await readConnectionMarker(env);
-        if (marker?.remoteGrantUncertain) throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
-        if (!current || state.off || marker?.syncOff) throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
+        const state = await readConnectionState(env);
+        if (state?.phase === "cleanup-needed") throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
+        if (!current || state?.phase !== "connected") throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
         const currentEndsAt = current.expiresAt ? Date.parse(current.expiresAt) : Number.NaN;
         if (!sameGrant(current, stored) && (Number.isNaN(currentEndsAt) || currentEndsAt - now().getTime() > REFRESH_MARGIN_MS)) {
           this.tokens = current;
@@ -99,22 +93,16 @@ export class Connection {
         }
         if (!current.refreshToken) return this.rejectUnlocked(current);
         const metadata = await discover(this.options.fetch);
-        await setRemoteGrantUncertain(env, true);
+        await transitionConnection(env, "begin-refresh");
         let next;
         try {
           next = await refresh(this.options.fetch, metadata, { clientId: current.clientId, refreshToken: current.refreshToken });
         } catch (error) {
           if (error instanceof ProgramscapeError && error.kind === "rejected") {
-            try {
-              await setRemoteGrantUncertain(env, false);
-            } catch {
-              await this.turnOff();
-              throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
-            }
+            await transitionConnection(env, "refresh-refused");
             return this.rejectUnlocked(current);
           }
-          const recordedOff = await this.turnOff();
-          throw new ProgramscapeError("unreachable", `Could not confirm whether Programscape issued rotated tokens. Remove the router's access on programscape.com and follow the manual connection-marker recovery instructions in the README. ${recordedOff ? "Sync is off." : "Could not save that sync is off; stop every running router."}`);
+          throw new ProgramscapeError("unreachable", "Could not confirm whether Programscape issued rotated tokens. Run `programscape-router disconnect`; it will clear local state and tell you how to check remote access.");
         }
         const updated: TokenFile = {
           ...current,
@@ -125,18 +113,15 @@ export class Connection {
         if (next.expiresIn === undefined) delete updated.expiresAt;
         try {
           await writeTokenFile(env, updated);
-          await setRemoteGrantUncertain(env, false);
+          await transitionConnection(env, "refresh-succeeded");
         } catch {
           const rollback = await Promise.allSettled([
             ...(next.refreshToken ? [revoke(this.options.fetch, metadata, { clientId: current.clientId, token: next.refreshToken, hint: "refresh_token" })] : []),
             revoke(this.options.fetch, metadata, { clientId: current.clientId, token: next.accessToken, hint: "access_token" }),
           ]);
           const revoked = rollback.every((result) => result.status === "fulfilled" && result.value);
-          if (revoked) await setRemoteGrantUncertain(env, false).catch(() => undefined);
-          const recordedOff = await this.turnOff();
-          const remote = revoked ? "The new grant was revoked." : "The new grant could not be confirmed revoked; remove the router's access on programscape.com.";
-          const local = recordedOff ? "Sync is off." : "Could not save that sync is off; stop every running router.";
-          throw new ProgramscapeError("refused", `Could not save Programscape's rotated tokens. ${remote} ${local} Run \`programscape-router disconnect\` before connecting again.`);
+          if (revoked) await transitionConnection(env, "refresh-refused").catch(() => undefined);
+          throw new ProgramscapeError("refused", `Could not save Programscape's rotated tokens. ${revoked ? "The new tokens were revoked." : "The new tokens could not be confirmed revoked."} Run \`programscape-router disconnect\`${revoked ? "." : " and check connected apps on programscape.com."}`);
         }
         this.tokens = updated;
         return updated.accessToken;
@@ -147,19 +132,14 @@ export class Connection {
     }
   }
 
-  private async turnOff(): Promise<boolean> {
-    this.disabledGrant = this.tokens;
-    const writes = await Promise.allSettled([markConnectionSyncOff(this.options.env), this.options.onRejected()]);
-    return writes.some((result) => result.status === "fulfilled");
-  }
-
   private async rejectUnlocked(expected: TokenFile): Promise<never> {
     const current = await readTokenFile(this.options.env);
-    const recordedOff = sameGrant(current, expected) ? await this.turnOff() : true;
-    this.tokens = undefined;
-    if (!recordedOff) {
-      throw new ProgramscapeError("refused", "Programscape refused the refresh, but sync could not be turned off in local storage. Stop every running router and run `programscape-router disconnect` before connecting again.");
+    const state = await readConnectionState(this.options.env);
+    if (sameGrant(current, expected) && state?.phase === "connected") {
+      await transitionConnection(this.options.env, "begin-refresh");
+      await transitionConnection(this.options.env, "refresh-refused");
     }
+    this.tokens = undefined;
     throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
   }
 

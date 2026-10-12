@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli-main.js";
 import * as keys from "../src/keys.js";
 import { KEYCHAIN_SERVICE } from "../src/keys.js";
-import { TOKEN_KEYCHAIN_ACCOUNT, connectionLockPath, connectionMarkerPath, deleteTokenFile, readSyncState, readTokenFile, tokenPath, writeTokenFile } from "../src/programscape/store.js";
+import { TOKEN_KEYCHAIN_ACCOUNT, connectionLockPath, connectionMarkerPath, deleteTokenFile, readConnectionState, readTokenFile, tokenPath, writeTokenFile } from "../src/programscape/store.js";
 import { AsyncEntry, fakeKeyring } from "./fake-keyring.js";
 import { fakeProgramscape } from "./programscape-fake.js";
 
@@ -150,26 +150,27 @@ describe("disconnect", () => {
     const code = await main(["disconnect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, { env, fetch: fake.fetch, platform: "darwin" });
     expect(code).toBe(1);
     const all = out.join("") + err.join("");
-    expect(all).toContain("Programscape: could not confirm the revocation");
+    expect(all).toContain("Programscape: remote access not fully verified");
     expect(all).toContain("OS keychain: COULD NOT DELETE");
-    expect(all).toContain("Could not verify that every local sign-in token was removed.");
+    expect(all).toContain("Could not verify local token removal.");
     expect(all).toMatch(/programscape-token/);
-    expect(all).toContain("remove the router's access on programscape.com");
+    expect(all).toContain("rerun `programscape-router disconnect`");
     expect(all).not.toContain("Disconnected:");
     expect(all).not.toContain("TOKENSECRET");
     expect(all).not.toContain("native delete failed");
     expect(await readTokenFile(env)).toBeDefined();
-    expect((await readSyncState(env)).off?.reason).toContain("disconnect was requested");
+    expect((await readConnectionState(env))?.phase).toBe("cleanup-needed");
   });
 
-  it("exits 1 when only the remote revoke fails, though nothing is left locally", async () => {
+  it("exits 2 when only the remote revoke fails, and allows another connect", async () => {
     const { fake, env } = await connectedHome();
     fake.behaviour.revokeFails = true;
     const err: string[] = [];
-    expect(await main(["disconnect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, fetch: fake.fetch })).toBe(1);
-    expect(err.join("")).toContain("remove the router's access on programscape.com");
-    expect(err.join("")).not.toContain("every local sign-in token");
+    expect(await main(["disconnect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, fetch: fake.fetch })).toBe(2);
+    expect(err.join("")).toContain("connected apps");
+    expect(err.join("")).not.toContain("local token removal");
     expect(await readTokenFile(env)).toBeUndefined();
+    expect(await readConnectionState(env)).toBeUndefined();
   });
 
   it("exits 0 only when the token is revoked and gone from every store", async () => {
@@ -177,7 +178,19 @@ describe("disconnect", () => {
     const out: string[] = [];
     expect(await main(["disconnect"], { stdout: (t) => out.push(t), stderr: () => {} }, { env, fetch: fake.fetch })).toBe(0);
     expect(out.join("")).toContain("OS keychain: deleted");
-    expect(out.join("")).toContain("Disconnected: no token is left on this machine, and Programscape revoked it.");
+    expect(out.join("")).toContain("Disconnected: local tokens removed and known Programscape tokens revoked.");
+  });
+
+  it("warns about remote access when a prior connection's token disappeared before disconnect", async () => {
+    const { fake, env } = await connectedHome();
+    fakeKeyring.store.delete(`${KEYCHAIN_SERVICE}\u0000${TOKEN_KEYCHAIN_ACCOUNT}`);
+    const out: string[] = [];
+    const err: string[] = [];
+    expect(await main(["disconnect"], { stdout: (line) => out.push(line), stderr: (line) => err.push(line) }, { env, fetch: fake.fetch })).toBe(2);
+    expect(out.join("")).toContain("Local connection cleared; remote access was not verified");
+    expect(err.join("")).toContain("connected apps");
+    expect(await readConnectionState(env)).toBeUndefined();
+    expect(fake.access.size).toBe(1);
   });
 
   it("exits 1 and asks for manual checks when the keychain cannot be opened", async () => {
@@ -190,16 +203,16 @@ describe("disconnect", () => {
       const code = await main(["disconnect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, { env, fetch: async () => { throw new Error("unexpected network call"); } });
       expect(code).toBe(1);
       expect(out.join("")).toContain("OS keychain: COULD NOT CHECK");
-      expect(err.join("")).toContain("Could not verify that every local sign-in token was removed.");
+      expect(err.join("")).toContain("Could not verify local token removal.");
       expect(err.join("")).toContain("programscape-token");
-      expect(err.join("")).toContain("programscape.com");
+      expect(err.join("")).toContain("rerun `programscape-router disconnect`");
       expect(inKeychain()).toBeDefined();
     } finally {
       open.mockRestore();
     }
   });
 
-  it("does not claim success if the initial token read fails but deletion later succeeds", async () => {
+  it("clears local state with a remote warning if the initial token read fails but deletion later succeeds", async () => {
     const env = home();
     await writeTokenFile(env, pair(1));
     const get = vi.spyOn(AsyncEntry.prototype, "getPassword").mockRejectedValueOnce(new Error("temporary read failure"));
@@ -207,10 +220,12 @@ describe("disconnect", () => {
       const out: string[] = [];
       const err: string[] = [];
       const code = await main(["disconnect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, { env, fetch: async () => { throw new Error("unexpected network call"); } });
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(out.join("")).not.toContain("Nothing to do");
-      expect(err.join("")).toContain("Programscape did not confirm the revocation");
+      expect(out.join("")).toContain("Local connection cleared; remote access was not verified");
+      expect(err.join("")).toContain("connected apps");
       expect(inKeychain()).toBeUndefined();
+      expect(await readConnectionState(env)).toBeUndefined();
     } finally {
       get.mockRestore();
     }
@@ -222,11 +237,11 @@ describe("disconnect", () => {
     const out: string[] = [];
     const err: string[] = [];
     const code = await main(["disconnect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, { env, fetch: async () => { throw new Error("unexpected network call"); } });
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(out.join("")).not.toContain("Nothing to do");
-    expect(err.join("")).toContain("Programscape did not confirm the revocation");
+    expect(err.join("")).toContain("connected apps");
     expect(inKeychain()).toBeUndefined();
-    expect((await readSyncState(env)).off).toBeDefined();
+    expect(await readConnectionState(env)).toBeUndefined();
   });
 
   it("refuses a second connect before contacting Programscape or overwriting the first grant", async () => {
@@ -279,11 +294,11 @@ describe("disconnect", () => {
     expect(await main(["disconnect"], { stdout: () => {}, stderr: () => {} }, { env, fetch: fake.fetch })).toBe(1);
     expect(existsSync(connectionMarkerPath(env))).toBe(true);
     fakeKeyring.available = true;
-    expect(await main(["disconnect"], { stdout: () => {}, stderr: () => {} }, { env, fetch: fake.fetch })).toBe(0);
+    expect(await main(["disconnect"], { stdout: () => {}, stderr: () => {} }, { env, fetch: fake.fetch })).toBe(2);
     expect(existsSync(connectionMarkerPath(env))).toBe(false);
   });
 
-  it("keeps the connection marker when the token response is lost after issuance", async () => {
+  it("clears local state with a warning when the token response is lost after issuance", async () => {
     const fake = fakeProgramscape();
     const env = home();
     const io = { stdout: () => {}, stderr: () => {} };
@@ -294,12 +309,15 @@ describe("disconnect", () => {
       return response;
     };
     expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: lostResponse, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
-    expect(err.join("")).toContain("remove the router's access on programscape.com");
+    expect(err.join("")).toContain("programscape-router disconnect");
     expect(existsSync(connectionMarkerPath(env))).toBe(true);
     expect(fake.access.size).toBe(1);
-    const requestsBefore = fake.seen.length;
     expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
-    expect(fake.seen).toHaveLength(requestsBefore);
+    const warning: string[] = [];
+    expect(await main(["disconnect"], { stdout: () => {}, stderr: (line) => warning.push(line) }, { env, fetch: fake.fetch })).toBe(2);
+    expect(warning.join("")).toContain("connected apps");
+    expect(await readConnectionState(env)).toBeUndefined();
+    expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
   });
 
   it("does not replace a malformed keychain entry during connect", async () => {
@@ -319,7 +337,7 @@ describe("disconnect", () => {
     const requestsBefore = fake.seen.length;
     const err: string[] = [];
     expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
-    expect(err.join("")).toContain("Could not check the OS keychain");
+    expect(err.join("")).toContain("A Programscape connection is already stored");
     expect(fake.seen).toHaveLength(requestsBefore);
     expect(inKeychain()?.accessToken).toBe("ps-ACCESS-1-TOKENSECRET");
   });
@@ -352,7 +370,7 @@ describe("disconnect", () => {
     expect(inKeychain()?.accessToken).toBe("ps-ACCESS-99-TOKENSECRET");
     expect(fake.access.size).toBe(0);
     expect(fake.refresh.size).toBe(0);
-    expect(fake.revocations.map((form) => form.get("token")).sort()).toEqual(["ps-ACCESS-1-TOKENSECRET", "ps-REFRESH-1-TOKENSECRET"]);
+    expect(fake.revocations).toHaveLength(0);
   });
 
   it("revokes newly issued tokens when storage fails after sign-in", async () => {
@@ -385,7 +403,7 @@ describe("disconnect", () => {
     expect(fake.revocations.map((form) => form.get("token")).sort()).toEqual(["ps-ACCESS-1-TOKENSECRET", "ps-REFRESH-1-TOKENSECRET"]);
   });
 
-  it("serializes concurrent connect attempts before the second makes a Programscape call", async () => {
+  it("does not hold the connection lock while the first browser waits", async () => {
     const fake = fakeProgramscape();
     const env = home();
     let release!: () => void;
@@ -397,15 +415,37 @@ describe("disconnect", () => {
       openBrowser: async (url) => { entered(); await hold; await fake.browser(url); },
     });
     await started;
-    const requestsBefore = fake.seen.length;
     const err: string[] = [];
+    expect(readdirSync(connectionLockPath(env))).toHaveLength(0);
     expect(await main(["connect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
-    expect(err.join("")).toContain("Another connection change may be running");
-    expect(fake.seen).toHaveLength(requestsBefore);
+    expect(err.join("")).toContain("sign-in is already in progress");
     release();
     expect(await first).toBe(0);
-    expect(existsSync(connectionLockPath(env))).toBe(false);
+    expect(readdirSync(connectionLockPath(env))).toHaveLength(0);
     expect(fake.access.size).toBe(1);
+  });
+
+  it("cancels a browser wait when disconnect runs before the callback", async () => {
+    const fake = fakeProgramscape();
+    const env = home();
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const first = main(["connect"], { stdout: () => {}, stderr: () => {} }, {
+      env, config: {}, fetch: fake.fetch, ledgerPath: false,
+      openBrowser: async (url) => { entered(); await hold; await fake.browser(url); },
+    });
+    await started;
+    expect(readdirSync(connectionLockPath(env))).toHaveLength(0);
+    const status: string[] = [];
+    expect(await main(["status"], { stdout: (line) => status.push(line), stderr: () => {} }, { env, config: {}, fetch: fake.fetch, ledgerPath: false })).toBe(0);
+    expect(status.join("")).toContain("sign-in is waiting for browser consent");
+    expect(await main(["disconnect"], { stdout: () => {}, stderr: () => {} }, { env, fetch: fake.fetch })).toBe(0);
+    release();
+    expect(await first).toBe(1);
+    expect(fake.access.size).toBe(0);
+    expect(await readConnectionState(env)).toBeUndefined();
   });
 
   it("revokes both readable grants when an old keychain entry survives a fallback", async () => {

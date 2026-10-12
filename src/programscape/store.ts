@@ -10,11 +10,12 @@
  * - The sync state file records, per provider, when a sync was last tried and how it ended. It holds program ids,
  *   times and the outcome, never a token, key, query or URL.
  */
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { existsSync } from "node:fs";
-import { KEYCHAIN_SERVICE, KeychainUnavailableError, type Keychain, manualRemoval, openKeychain } from "../keys.js";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { KEYCHAIN_SERVICE, KeychainUnavailableError, type Keychain, openKeychain } from "../keys.js";
 import { stateDir, tokenDir } from "../paths.js";
 import { PROVIDER_IDS, type ProviderId } from "../types.js";
 
@@ -23,7 +24,7 @@ export function tokenPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = pr
 }
 
 export function connectionLockPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
-  return join(tokenDir(env, platform), "programscape-connection.lock");
+  return join(tokenDir(env, platform), "programscape-connection.locks");
 }
 
 /** Nonsecret reminder that a grant may exist even while its keychain backend is unavailable. */
@@ -31,45 +32,83 @@ export function connectionMarkerPath(env: NodeJS.ProcessEnv, platform: NodeJS.Pl
   return join(tokenDir(env, platform), "programscape-connection.json");
 }
 
-export interface ConnectionMarker {
+/** One local lifecycle state. Absence of the file means disconnected. The keychain field describes storage, not state. */
+export type ConnectionPhase = "disconnected" | "awaiting-consent" | "connected" | "sync-off" | "cleanup-needed";
+export interface ConnectionState {
+  phase: Exclude<ConnectionPhase, "disconnected">;
   /** Set before any attempt to save this grant in the keychain. */
   keychainMayHoldGrant: boolean;
-  /** A second durable sync-off location when the state directory cannot be written. */
-  syncOff: boolean;
-  /** Programscape may have issued a token pair that was never saved locally. */
-  remoteGrantUncertain: boolean;
+  /** Fences a browser callback after another process has disconnected or started a new sign-in. */
+  attemptId?: string;
 }
 
-export async function readConnectionMarker(env: NodeJS.ProcessEnv): Promise<ConnectionMarker | undefined> {
+export type ConnectionEvent =
+  | "begin-connect" | "begin-exchange" | "cancel-connect" | "connect-succeeded" | "connect-rejected"
+  | "begin-refresh" | "refresh-succeeded" | "refresh-refused"
+  | "begin-disconnect" | "local-cleared";
+
+/** Allowed lifecycle transitions; every persistent change passes through this table. */
+const TRANSITIONS: Record<ConnectionEvent, readonly ConnectionPhase[]> = {
+  "begin-connect": ["disconnected"],
+  "begin-exchange": ["awaiting-consent"],
+  "cancel-connect": ["awaiting-consent"],
+  "connect-succeeded": ["cleanup-needed"],
+  "connect-rejected": ["cleanup-needed"],
+  "begin-refresh": ["connected"],
+  "refresh-succeeded": ["cleanup-needed"],
+  "refresh-refused": ["cleanup-needed"],
+  "begin-disconnect": ["disconnected", "awaiting-consent", "connected", "sync-off", "cleanup-needed"],
+  "local-cleared": ["cleanup-needed"],
+};
+const NEXT_PHASE: Record<ConnectionEvent, ConnectionPhase> = {
+  "begin-connect": "awaiting-consent",
+  "begin-exchange": "cleanup-needed",
+  "cancel-connect": "disconnected",
+  "connect-succeeded": "connected",
+  "connect-rejected": "disconnected",
+  "begin-refresh": "cleanup-needed",
+  "refresh-succeeded": "connected",
+  "refresh-refused": "sync-off",
+  "begin-disconnect": "cleanup-needed",
+  "local-cleared": "disconnected",
+};
+
+export function nextConnectionPhase(current: ConnectionPhase, event: ConnectionEvent): ConnectionPhase {
+  if (!TRANSITIONS[event].includes(current)) throw new Error(`Invalid Programscape connection transition: ${current} + ${event}.`);
+  return NEXT_PHASE[event];
+}
+
+export async function readConnectionState(env: NodeJS.ProcessEnv): Promise<ConnectionState | undefined> {
   const path = connectionMarkerPath(env);
   if (!existsSync(path)) return undefined;
   const raw = await readJson(path);
-  // A damaged marker must never make an unreadable keychain look safe.
+  // Accept the old marker written by the unreleased branch. A damaged marker requires cleanup.
+  const phase = isRecord(raw) && (raw.phase === "awaiting-consent" || raw.phase === "connected" || raw.phase === "sync-off" || raw.phase === "cleanup-needed")
+    ? raw.phase
+    : isRecord(raw) && raw.remoteGrantUncertain === true ? "cleanup-needed"
+      : isRecord(raw) && raw.syncOff === true ? "sync-off" : isRecord(raw) && raw.remoteGrantUncertain === false ? "connected" : "cleanup-needed";
   return {
+    phase,
     keychainMayHoldGrant: !isRecord(raw) || raw.keychainMayHoldGrant !== false,
-    syncOff: !isRecord(raw) || raw.syncOff === true,
-    remoteGrantUncertain: !isRecord(raw) || raw.remoteGrantUncertain === true,
+    ...(isRecord(raw) && typeof raw.attemptId === "string" ? { attemptId: raw.attemptId } : {}),
   };
 }
 
-export async function writeConnectionMarker(env: NodeJS.ProcessEnv, marker: ConnectionMarker): Promise<void> {
-  await writeSecureJson(connectionMarkerPath(env), { version: 1, ...marker });
+export async function writeConnectionState(env: NodeJS.ProcessEnv, state: ConnectionState): Promise<void> {
+  await writeSecureJson(connectionMarkerPath(env), { version: 2, ...state });
 }
 
 export async function markConnectionKeychainPossible(env: NodeJS.ProcessEnv): Promise<void> {
-  const marker = await readConnectionMarker(env);
-  if (marker && !marker.keychainMayHoldGrant) await writeConnectionMarker(env, { ...marker, keychainMayHoldGrant: true });
+  const state = await readConnectionState(env);
+  if (state && !state.keychainMayHoldGrant) await writeConnectionState(env, { ...state, keychainMayHoldGrant: true });
 }
 
-export async function markConnectionSyncOff(env: NodeJS.ProcessEnv): Promise<void> {
-  const marker = await readConnectionMarker(env);
-  await writeConnectionMarker(env, { keychainMayHoldGrant: marker?.keychainMayHoldGrant ?? true, syncOff: true, remoteGrantUncertain: marker?.remoteGrantUncertain ?? true });
-}
-
-export async function setRemoteGrantUncertain(env: NodeJS.ProcessEnv, remoteGrantUncertain: boolean): Promise<void> {
-  const marker = await readConnectionMarker(env);
-  if (!marker) throw new Error("The Programscape connection marker is missing.");
-  await writeConnectionMarker(env, { ...marker, remoteGrantUncertain });
+export async function transitionConnection(env: NodeJS.ProcessEnv, event: ConnectionEvent, keychainMayHoldGrant = false, attemptId?: string): Promise<ConnectionPhase> {
+  const current = await readConnectionState(env);
+  const phase = nextConnectionPhase(current?.phase ?? "disconnected", event);
+  if (phase === "disconnected") await deleteConnectionMarker(env);
+  else await writeConnectionState(env, { phase, keychainMayHoldGrant: current?.keychainMayHoldGrant ?? keychainMayHoldGrant, ...(event === "begin-connect" && attemptId ? { attemptId } : {}) });
+  return phase;
 }
 
 export async function deleteConnectionMarker(env: NodeJS.ProcessEnv): Promise<void> {
@@ -121,8 +160,6 @@ export interface ProviderSyncRecord {
 export interface SyncState {
   version: 1;
   lastSyncedAt?: string;
-  /** Set when sync turned itself off (a refresh was refused). Cleared by `connect`. */
-  off?: { since: string; reason: string };
   providers: Partial<Record<ProviderId, ProviderSyncRecord>>;
 }
 
@@ -179,35 +216,142 @@ export class TokenStoreOccupiedError extends Error {
 
 export class ConnectionLockError extends Error {
   constructor(path: string) {
-    super(`Another connection change may be running. If none is running, including after Ctrl+C or a crash, delete the stale lock file ${path} and retry.`);
+    super(`Another Programscape connection change is running. Retry shortly; an abandoned lock at ${path} is reclaimed automatically.`);
     this.name = "ConnectionLockError";
   }
 }
 
-/** Serialize connection changes across router processes. A crash leaves a lock that the user must remove by hand. */
+const LOCK_MAX_AGE_MS = 2 * 60_000;
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+const heldLocks = new Map<string, string>();
+
+function cleanHeldLocks(): void {
+  for (const [path, marker] of heldLocks) {
+    try {
+      if (readFileSync(path, "utf8") === marker) rmSync(path, { force: true });
+    } catch { /* The next process can reclaim an abandoned lock. */ }
+  }
+  heldLocks.clear();
+}
+
+function onSignal(signal: typeof SIGNALS[number]): void {
+  // A library caller may handle this signal and continue running. Keep serialization until the work's finally
+  // block in that case; removing the lock while the operation is live would let another process mutate the grant.
+  if (process.listenerCount(signal) > 1) return;
+  cleanHeldLocks();
+  removeSignalHandlers();
+  process.kill(process.pid, signal);
+}
+
+const signalHandlers = Object.fromEntries(SIGNALS.map((signal) => [signal, () => onSignal(signal)])) as Record<typeof SIGNALS[number], () => void>;
+function addSignalHandlers(): void {
+  if (heldLocks.size !== 1) return;
+  for (const signal of SIGNALS) process.on(signal, signalHandlers[signal]);
+}
+function removeSignalHandlers(): void {
+  for (const signal of SIGNALS) process.off(signal, signalHandlers[signal]);
+}
+
+interface LockEntry { pid: number; createdAt: number; ownerStartedAt: number; nonce: string; ticket?: number }
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return !isRecord(error) || error.code !== "ESRCH"; }
+}
+
+/** OS process start time distinguishes a reused PID from the process that wrote an old lock entry. */
+function processStartedAt(pid: number): number | undefined {
+  if (pid === process.pid) return Date.now() - process.uptime() * 1000;
+  try {
+    const output = process.platform === "win32"
+      ? execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().ToString('o')`], { encoding: "utf8", timeout: 1500, stdio: ["ignore", "pipe", "ignore"] })
+      : execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: 1500, stdio: ["ignore", "pipe", "ignore"] });
+    const parsed = Date.parse(output.trim());
+    return Number.isFinite(parsed) ? parsed : undefined;
+  } catch { return undefined; }
+}
+
+async function contenders(dir: string, starts: Map<string, number | undefined>): Promise<Array<{ name: string; entry?: LockEntry; choosing: boolean }>> {
+  const names = await readdir(dir);
+  const found: Array<{ name: string; entry?: LockEntry; choosing: boolean }> = [];
+  for (const name of names) {
+    const path = join(dir, name);
+    const pid = Number(name.split(".", 1)[0]);
+    if (!Number.isSafeInteger(pid) || pid < 1) {
+      const info = await stat(path).catch(() => undefined);
+      if (info && info.mtimeMs < Date.now() - LOCK_MAX_AGE_MS) await rm(path, { force: true }).catch(() => undefined);
+      else if (info) found.push({ name, choosing: true });
+      continue;
+    }
+    if (!processAlive(pid)) { await rm(path, { force: true }).catch(() => undefined); continue; }
+    const raw = await readFile(path, "utf8").catch(() => "");
+    let entry: LockEntry | undefined;
+    let owner: LockEntry | undefined;
+    try {
+      const parsed = JSON.parse(raw) as LockEntry;
+      if (parsed.pid === pid && Number.isFinite(parsed.ownerStartedAt)) {
+        owner = parsed;
+        if (Number.isSafeInteger(parsed.ticket) && (parsed.ticket ?? 0) > 0) entry = parsed;
+      }
+    } catch { /* A contender may still be choosing or writing its ticket. */ }
+    if (owner) {
+      if (!starts.has(name)) starts.set(name, processStartedAt(pid));
+      const startedAt = starts.get(name);
+      if (startedAt !== undefined && Math.abs(startedAt - owner.ownerStartedAt) > 3_000) {
+        await rm(path, { force: true }).catch(() => undefined);
+        continue;
+      }
+    }
+    if (!entry) {
+      const info = await stat(path).catch(() => undefined);
+      if (!info) continue;
+      if (!owner) {
+        if (!starts.has(name)) starts.set(name, processStartedAt(pid));
+        const startedAt = starts.get(name);
+        if (startedAt !== undefined && startedAt > info.mtimeMs + 3_000) {
+          await rm(path, { force: true }).catch(() => undefined);
+          continue;
+        }
+      }
+    }
+    found.push({ name, ...(entry ? { entry } : {}), choosing: !entry });
+  }
+  return found;
+}
+
+/** Bakery-style lock: each process owns a unique entry. Dead entries are ignored; no contender unlinks another's live lock. */
 export async function withConnectionLock<T>(env: NodeJS.ProcessEnv, work: () => Promise<T>): Promise<T> {
-  const path = connectionLockPath(env);
-  const dir = dirname(path);
+  const dir = connectionLockPath(env);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await restrict(dir, 0o700);
-  let handle;
+  const nonce = randomUUID();
+  const name = `${process.pid}.${nonce}.json`;
+  const path = join(dir, name);
+  const base: LockEntry = { pid: process.pid, createdAt: Date.now(), ownerStartedAt: processStartedAt(process.pid)!, nonce };
+  await writeFile(path, JSON.stringify(base), { flag: "wx", mode: 0o600 });
   try {
-    handle = await open(path, "wx", 0o600);
-  } catch (error) {
-    if (isRecord(error) && error.code === "EEXIST") throw new ConnectionLockError(path);
-    throw error;
-  }
-  const marker = `${process.pid}:${randomUUID()}`;
-  let marked = false;
-  try {
-    await handle.writeFile(marker);
-    marked = true;
-    await handle.close();
+    const starts = new Map<string, number | undefined>();
+    const initial = await contenders(dir, starts);
+    const ticket = 1 + Math.max(0, ...initial.map((other) => other.entry?.ticket ?? 0));
+    const ready = JSON.stringify({ ...base, ticket });
+    await writeFile(path, ready);
+    const deadline = Date.now() + 500;
+    for (;;) {
+      const current = await contenders(dir, starts);
+      if (!current.some((other) => other.name === name)) throw new ConnectionLockError(dir);
+      const blocks = current.some((other) => other.name !== name && (other.choosing ||
+        (other.entry!.ticket! < ticket || (other.entry!.ticket === ticket && other.name < name))));
+      if (!blocks) break;
+      if (Date.now() >= deadline) throw new ConnectionLockError(dir);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    heldLocks.set(path, ready);
+    addSignalHandlers();
     return await work();
   } finally {
-    await handle.close().catch(() => undefined);
-    const current = await readFile(path, "utf8").catch(() => undefined);
-    if (!marked || current === marker) await rm(path, { force: true }).catch(() => undefined);
+    heldLocks.delete(path);
+    if (heldLocks.size === 0) removeSignalHandlers();
+    await rm(path, { force: true }).catch(() => undefined);
   }
 }
 
@@ -281,11 +425,20 @@ export async function inspectTokenFile(env: NodeJS.ProcessEnv): Promise<{
   copies: TokenFile[];
   hasLocalEntry: boolean;
   keychainLoaded: boolean;
+  /** The module should be usable, but opening it failed unexpectedly. */
+  keychainOpenFailed: boolean;
   keychainReadable: boolean;
   keychainBackendUnavailable: boolean;
   readVerified: boolean;
 }> {
-  const keychain = await tokenKeychain();
+  let keychain: Keychain | undefined;
+  let keychainOpenFailed = false;
+  try {
+    keychain = await openKeychain();
+  } catch (error) {
+    keychainOpenFailed = !(error instanceof KeychainUnavailableError &&
+      (error.problem === "module-missing" || error.problem === "no-secret-service" || error.problem === "no-default-keychain"));
+  }
   const both = await readBoth(env, keychain);
   const filePresent = existsSync(tokenPath(env));
   const copies = both.file ? [both.file] : [];
@@ -299,7 +452,7 @@ export async function inspectTokenFile(env: NodeJS.ProcessEnv): Promise<{
   const readVerified = both.keychainReadable && (!both.keychainPresent || Boolean(both.keychain)) && (!filePresent || Boolean(both.file));
   const hasLocalEntry = both.keychainPresent || filePresent;
   // If the authoritative file exists but cannot be parsed, never fall through to an older keychain copy.
-  const status = { copies, hasLocalEntry, keychainLoaded: Boolean(keychain), keychainReadable: both.keychainReadable, keychainBackendUnavailable: both.keychainBackendUnavailable, readVerified };
+  const status = { copies, hasLocalEntry, keychainLoaded: Boolean(keychain), keychainOpenFailed, keychainReadable: both.keychainReadable, keychainBackendUnavailable: both.keychainBackendUnavailable, readVerified };
   if (filePresent) return { ...(both.file ? { tokens: both.file } : {}), ...status };
   return { ...(both.keychain ? { tokens: both.keychain } : {}), ...status };
 }
@@ -406,8 +559,8 @@ export async function deleteTokenFile(env: NodeJS.ProcessEnv): Promise<TokenDele
   const manual: string[] = [];
   const keychainGone = left.keychainReadable && !left.keychainPresent;
   const fileGone = fileState !== "failed" && !existsSync(path);
-  if (!keychainGone) manual.push(manualRemoval(keychain?.service ?? KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT));
-  if (!fileGone) manual.push(`Delete the file ${path}.`);
+  if (!keychainGone) manual.push(`Unlock or repair the OS keychain, then rerun \`programscape-router disconnect\`. The router entry is ${keychain?.service ?? KEYCHAIN_SERVICE}/${TOKEN_KEYCHAIN_ACCOUNT}.`);
+  if (!fileGone) manual.push(`Restore write access to ${path}, then rerun \`programscape-router disconnect\`.`);
   const gone = keychainGone && fileGone;
   return { keychain: keychainState, file: fileState, gone, ...(manual.length > 0 ? { manual } : {}) };
 }
@@ -443,9 +596,6 @@ export async function readSyncState(env: NodeJS.ProcessEnv): Promise<SyncState> 
   if (!isRecord(raw)) return clean;
   const last = text(raw.lastSyncedAt);
   if (last) clean.lastSyncedAt = last;
-  if (isRecord(raw.off) && text(raw.off.since) && text(raw.off.reason)) {
-    clean.off = { since: raw.off.since as string, reason: raw.off.reason as string };
-  }
   const providers = isRecord(raw.providers) ? raw.providers : {};
   for (const id of PROVIDER_IDS) {
     const entry = providers[id];

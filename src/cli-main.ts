@@ -5,7 +5,6 @@ import { formatStatus } from "./format.js";
 import { type KeyringLoader, resolveKeys } from "./keys.js";
 import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
 import { ProgramscapeError } from "./programscape/guard.js";
-import { connectionMarkerPath } from "./programscape/store.js";
 import { runMcpServer } from "./mcp.js";
 import { type Router, RouterError, type RouterOptions, createRouter } from "./router.js";
 import type { Routing } from "./types.js";
@@ -164,7 +163,7 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   if (command === "disconnect") {
     const result = await disconnect({ env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
     const { local } = result;
-    if (!result.wasConnected && result.tokenReadVerified && local.gone && result.markerGone) {
+    if (result.outcome === "nothing-to-do") {
       io.stdout("Programscape sync was not connected. Nothing to do.\n");
       return 0;
     }
@@ -172,29 +171,24 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     io.stdout(
       [
         "Disconnect from Programscape:",
-        `  Programscape: ${result.revoked ? "revoked the router's access" : "could not confirm the revocation"}`,
+        `  Programscape: ${result.outcome === "disconnected" ? "revoked the known router tokens" : "remote access not fully verified"}`,
         `  OS keychain: ${words[local.keychain]}`,
         `  token file: ${words[local.file]}`,
         "",
       ].join("\n"),
     );
-    if (!local.gone) {
-      io.stderr(`Could not verify that every local sign-in token was removed. Check these stores and remove any remaining entry by hand:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+    if (result.outcome === "local-incomplete") {
+      io.stderr(`Could not verify local token removal. Unlock or repair the reported store, then rerun \`programscape-router disconnect\`:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+      io.stderr("Check programscape.com → My plans → connected apps for any router access as well.\n");
+      return 1;
     }
-    if (!result.markerGone) {
-      io.stderr(`The connection marker remains at ${connectionMarkerPath(env)}. If no readable token remains, first remove the router's access on programscape.com and check both local token stores; then delete that marker file by hand. The next connect stays blocked until it is removed.\n`);
+    if (result.outcome === "remote-unverified") {
+      io.stdout("Local connection cleared; remote access was not verified. You can connect again.\n");
+      io.stderr("Check programscape.com → My plans → connected apps and remove programscape-router if it is listed.\n");
+      return 2;
     }
-    if (!result.automaticSyncDisabled) {
-      io.stderr("Could not turn off automatic balance sync in local state. Stop any running router and remove its local sign-in tokens.\n");
-    }
-    if (!result.revoked && (result.wasConnected || !result.tokenReadVerified || !local.gone)) {
-      io.stderr("Programscape did not confirm the revocation: check and remove the router's access on programscape.com as well.\n");
-    }
-    if (result.tokenReadVerified && local.gone && result.markerGone && (result.revoked || !result.wasConnected)) {
-      io.stdout("Disconnected: no token is left on this machine, and Programscape revoked it.\n");
-      return 0;
-    }
-    return 1;
+    io.stdout("Disconnected: local tokens removed and known Programscape tokens revoked.\n");
+    return 0;
   }
 
   const {
