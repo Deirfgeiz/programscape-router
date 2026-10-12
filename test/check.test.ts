@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CHECK_URL, formatCheck, runCheck } from "../src/check.js";
+import { CHECK_HINTS, CHECK_URL, VERBOSE_WARNING, formatCheck, runCheck } from "../src/check.js";
 import { main } from "../src/cli-main.js";
 import { URLS, fixture, json, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
 
@@ -48,7 +48,7 @@ function steppingClock(): () => number {
 function io() {
   const out: string[] = [];
   const err: string[] = [];
-  return { streams: { stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t) }, out, err };
+  return { streams: { stdout: (t: string) => out.push(t), stderr: (t: string) => err.push(t) }, out, err, all: () => out.join("") + err.join("") };
 }
 
 function expectNoContent(text: string): void {
@@ -124,26 +124,28 @@ describe("check", () => {
     expect(JSON.stringify(report)).not.toContain("500000");
   });
 
-  const outcomes: Array<[string, Responder, string, number | undefined]> = [
-    ["exhausted (402)", status(402, { requestId: "r", error: "No more credits", tag: "NO_MORE_CREDITS" }), "exhausted", 402],
-    ["rate_limited (429)", status(429, { requestId: "r", error: "Slow down", tag: "RATE_LIMIT_EXCEEDED" }), "rate_limited", 429],
-    ["unauthorized (401)", status(401, { requestId: "r", error: "Invalid API key", tag: "INVALID_API_KEY" }), "unauthorized", 401],
-    ["bad_request (400)", status(400, fixture("exa-error")), "bad_request", 400],
-    ["server_error (503)", status(503, { requestId: "r", error: "Over capacity", tag: "SERVICE_OVERLOADED" }), "server_error", 503],
-    ["provider_error (404)", status(404, { requestId: "r", error: "Not found", tag: "NOT_FOUND" }), "provider_error", 404],
-    ["provider_error (FEATURE_DISABLED)", status(403, { requestId: "r", error: "Not on your plan", tag: "FEATURE_DISABLED" }), "provider_error", 403],
-    ["timeout", timeout, "timeout", undefined],
+  // [name, response, outcome, HTTP status, documented code shown]
+  const outcomes: Array<[string, Responder, string, number | undefined, string | undefined]> = [
+    ["exhausted (402)", status(402, { requestId: "r", error: "No more credits", tag: "NO_MORE_CREDITS" }), "exhausted", 402, "NO_MORE_CREDITS"],
+    ["rate_limited (429)", status(429, { requestId: "r", error: "Slow down", tag: "RATE_LIMIT_EXCEEDED" }), "rate_limited", 429, "RATE_LIMIT_EXCEEDED"],
+    ["unauthorized (401)", status(401, { requestId: "r", error: "Invalid API key", tag: "INVALID_API_KEY" }), "unauthorized", 401, "INVALID_API_KEY"],
+    ["bad_request (400)", status(400, fixture("exa-error")), "bad_request", 400, "INVALID_REQUEST_BODY"],
+    ["server_error (503)", status(503, { requestId: "r", error: "Over capacity", tag: "SERVICE_OVERLOADED" }), "server_error", 503, "SERVICE_OVERLOADED"],
+    ["provider_error (404, undocumented tag)", status(404, { requestId: "r", error: "Not found", tag: "NOT_FOUND" }), "provider_error", 404, undefined],
+    ["provider_error (FEATURE_DISABLED)", status(403, { requestId: "r", error: "Not on your plan", tag: "FEATURE_DISABLED" }), "provider_error", 403, "FEATURE_DISABLED"],
+    ["timeout", timeout, "timeout", undefined, undefined],
   ];
 
-  for (const [name, responder, outcome, httpStatus] of outcomes) {
-    it(`reports ${name} as a failure with its class, status and message, and exits 1`, async () => {
+  for (const [name, responder, outcome, httpStatus, code] of outcomes) {
+    it(`reports ${name} with its class, status, documented code and our hint, and exits 1`, async () => {
       const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: responder });
       const report = await runCheck({ env: { EXA_API_KEY: KEYS.EXA_API_KEY }, fetch, clock: steppingClock() });
       const search = report.providers.find((p) => p.provider === "exa")?.calls[0];
-      expect(search).toMatchObject({ capability: "search", ok: false, outcome, latencyMs: 42 });
+      expect(search).toMatchObject({ capability: "search", ok: false, outcome, latencyMs: 42, hint: CHECK_HINTS[outcome as keyof typeof CHECK_HINTS] });
       expect(search?.status).toBe(httpStatus);
-      expect(search?.message).toBeTruthy();
-      expect(report).toMatchObject({ ok: false, attempted: 2, passed: 1, failed: 1 });
+      expect(search?.code).toBe(code);
+      expect(search).not.toHaveProperty("providerMessage");
+      expect(report).toMatchObject({ ok: false, attempted: 2, passed: 1, failed: 1, verbose: false });
       expect(formatCheck(report)).toContain(`  search   FAIL ${outcome}`);
       expect(formatCheck(report)).toContain("FAIL: 1 of 2 calls passed, 1 failed; 4 providers skipped (no key).");
 
@@ -163,22 +165,22 @@ describe("check", () => {
     const report = await runCheck({ env: KEYS, fetch });
     const outcome = (provider: string, capability: string) =>
       report.providers.find((p) => p.provider === provider)?.calls.find((c) => c.capability === capability);
-    expect(outcome("firecrawl", "scrape")).toMatchObject({ outcome: "exhausted", status: 402, message: "Payment required to access this resource." });
+    expect(outcome("firecrawl", "scrape")).toMatchObject({ outcome: "exhausted", status: 402, code: "insufficient_credits" });
     expect(outcome("tavily", "search")).toMatchObject({ outcome: "exhausted", status: 432 });
-    expect(outcome("tavily", "search")?.message).toContain("exceeds your plan's set usage limit");
-    expect(outcome("parallel", "search")).toMatchObject({ outcome: "exhausted", status: 402, message: "Insufficient credit in account" });
-    expect(outcome("keenable", "scrape")).toMatchObject({ outcome: "exhausted", status: 402, message: "No credits available" });
+    expect(outcome("parallel", "search")).toMatchObject({ outcome: "exhausted", status: 402 });
+    expect(outcome("keenable", "scrape")).toMatchObject({ outcome: "exhausted", status: 402 });
     expect(report.failed).toBe(4);
+    // The providers' own words stay out of the default report.
+    expect(JSON.stringify(report)).not.toContain("Insufficient credit");
+    expect(JSON.stringify(report)).not.toContain("No credits available");
   });
 
   it("reads Parallel's documented error envelope for a rejected request", async () => {
     const { fetch } = mockFetch({ ...success, [URLS.parallelSearch]: status(422, fixture("parallel-error")) });
     const report = await runCheck({ env: { PARALLEL_API_KEY: "par-key-1" }, fetch });
-    expect(report.providers.find((p) => p.provider === "parallel")?.calls[0]).toMatchObject({
-      outcome: "bad_request",
-      status: 422,
-      message: "Request validation error",
-    });
+    expect(report.providers.find((p) => p.provider === "parallel")?.calls[0]).toMatchObject({ outcome: "bad_request", status: 422 });
+    const verbose = await runCheck({ env: { PARALLEL_API_KEY: "par-key-1" }, fetch, verbose: true });
+    expect(verbose.providers.find((p) => p.provider === "parallel")?.calls[0]?.providerMessage).toBe("Request validation error");
   });
 
   it("reports a page the provider could not fetch, and a balance it could not read", async () => {
@@ -189,52 +191,91 @@ describe("check", () => {
     });
     const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1", FIRECRAWL_API_KEY: "fc-key-1" }, fetch });
     const exaScrape = report.providers.find((p) => p.provider === "exa")?.calls[1];
-    expect(exaScrape).toEqual(expect.objectContaining({ outcome: "fetch_failed", message: "Exa could not fetch the page (CRAWL_NOT_FOUND); the page answered HTTP 404" }));
+    expect(exaScrape).toEqual(expect.objectContaining({ outcome: "fetch_failed", code: "CRAWL_NOT_FOUND" }));
     expect(exaScrape?.status).toBeUndefined();
     const balance = report.providers.find((p) => p.provider === "firecrawl")?.calls[2];
     expect(balance).toMatchObject({ capability: "balance", ok: false, outcome: "server_error", status: 500 });
   });
 
-  it("redacts every key from provider error messages, in text and JSON", async () => {
-    // The worst case: error bodies that echo the request headers (and so the key) back.
+  it("keeps a short key, an amount, a URL and an email a provider echoes out of the default and --json output", async () => {
+    // The case a review found: a 3-character key, a balance amount, a private URL and an email in an error body,
+    // and in an error code field too.
+    const leaky = "key abc; balance 777 credits; URL https://private.example/page; contact founder@example.com";
+    const responder: Responder = () => json({ error: leaky, tag: leaky, code: leaky, detail: { error: leaky } }, 401);
+    const routes: Record<string, Responder> = {};
+    for (const url of Object.values(URLS)) routes[url] = responder;
+    const { fetch } = mockFetch(routes);
+    const env = { EXA_API_KEY: "abc", FIRECRAWL_API_KEY: "fc-x", KEENABLE_API_KEY: "kx", PARALLEL_API_KEY: "p", TAVILY_API_KEY: "t-1" };
+
+    const text = io();
+    expect(await main(["check"], text.streams, { env, fetch })).toBe(1);
+    const jsonOut = io();
+    expect(await main(["check", "--json"], jsonOut.streams, { env, fetch })).toBe(1);
+    for (const output of [text.all(), jsonOut.all()]) {
+      expect(output).not.toContain("abc");
+      expect(output).not.toContain("777");
+      expect(output).not.toContain("private.example");
+      expect(output).not.toContain("founder@example.com");
+      expect(output).not.toContain("key abc");
+    }
+    const report = JSON.parse(jsonOut.out.join(""));
+    expect(report.verbose).toBe(false);
+    for (const provider of report.providers) {
+      for (const call of provider.calls) {
+        expect(call.outcome).toBe("unauthorized");
+        expect(call).not.toHaveProperty("providerMessage");
+        expect(call).not.toHaveProperty("code"); // not a documented code, so not shown
+      }
+    }
+  });
+
+  it("shows providers' messages only with --verbose, keys redacted, under a do-not-share warning", async () => {
+    // Error bodies that echo the request headers (and so the key) back.
     const echo: Responder = (call) => json({ error: `bad key ${JSON.stringify(call.headers)} and also ${KEYS.TAVILY_API_KEY}` }, 401);
     const routes: Record<string, Responder> = {};
     for (const url of Object.values(URLS)) routes[url] = echo;
     const { fetch } = mockFetch(routes);
 
     const text = io();
-    expect(await main(["check"], text.streams, { env: KEYS, fetch })).toBe(1);
+    expect(await main(["check", "--verbose"], text.streams, { env: KEYS, fetch })).toBe(1);
     const json_ = io();
-    expect(await main(["check", "--json"], json_.streams, { env: KEYS, fetch })).toBe(1);
+    expect(await main(["check", "--json", "--verbose"], json_.streams, { env: KEYS, fetch })).toBe(1);
 
-    for (const output of [text.out.join(""), JSON.stringify(JSON.parse(json_.out.join("")))]) {
+    expect(text.out.join("").startsWith(`${VERBOSE_WARNING}\n`)).toBe(true);
+    expect(text.out.join("")).toContain("provider said (not for sharing): bad key");
+    const report = JSON.parse(json_.out.join(""));
+    expect(report).toMatchObject({ verbose: true, warning: VERBOSE_WARNING, failed: 12 });
+    for (const output of [text.out.join(""), JSON.stringify(report)]) {
       expect(output).toContain("[redacted]");
       expectNoContent(output);
     }
-    const report = JSON.parse(json_.out.join(""));
-    expect(report.failed).toBe(12);
-    for (const provider of report.providers) for (const call of provider.calls) expect(call.outcome).toBe("unauthorized");
   });
 
-  it("cuts long error messages", async () => {
+  it("redacts even a very short key in --verbose output", async () => {
+    const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: status(401, { error: "key abc is not valid" }) });
+    const report = await runCheck({ env: { EXA_API_KEY: "abc" }, fetch, verbose: true });
+    expect(report.providers[0]?.calls[0]?.providerMessage).toBe("key [redacted] is not valid");
+  });
+
+  it("cuts long provider messages in --verbose output", async () => {
     const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: status(500, { error: "x".repeat(2000) }) });
-    const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch });
-    expect(report.providers[0]?.calls[0]?.message).toHaveLength(300);
+    const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch, verbose: true });
+    expect(report.providers[0]?.calls[0]?.providerMessage).toHaveLength(300);
   });
 
-  it("reports a fetch that throws as a network error, with our own message", async () => {
+  it("reports a fetch that throws as a network error, without its message", async () => {
     const { fetch } = mockFetch({
       ...success,
       [URLS.exaSearch]: () => {
         throw new TypeError(`boom ${PAGE}`);
       },
     });
-    const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch });
-    expect(report.providers[0]?.calls[0]).toMatchObject({ outcome: "network_error", message: "Could not reach the provider" });
+    const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch, verbose: true });
+    expect(report.providers[0]?.calls[0]).toMatchObject({ outcome: "network_error", providerMessage: "Could not reach the provider" });
     expectNoContent(JSON.stringify(report));
   });
 
-  it("never reports an unexpected adapter error's own message", async () => {
+  it("never reports an unexpected adapter error's own message, even with --verbose", async () => {
     // A response object that blows up when read: an adapter bug, not a provider answer.
     const broken = {
       get type(): string {
@@ -242,12 +283,13 @@ describe("check", () => {
       },
     } as unknown as Response;
     const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: () => broken });
-    const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch });
+    const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch, verbose: true });
     expect(report.providers[0]?.calls[0]).toMatchObject({
       ok: false,
       outcome: "provider_error",
-      message: "The adapter failed unexpectedly (TypeError).",
+      hint: "The adapter failed unexpectedly. Please open an issue with check --json.",
     });
+    expect(report.providers[0]?.calls[0]).not.toHaveProperty("providerMessage");
     expectNoContent(JSON.stringify(report));
   });
 

@@ -10,7 +10,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -24,12 +24,20 @@ function run(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
 
-// npm through node and npm's own entry point when `npm run` gave us one: Node won't spawn npm.cmd on Windows
-// without a shell.
+// npm through node and npm's own JS entry point, never through npm.cmd: Node won't spawn a .cmd shim without a
+// shell, and a shell would re-parse the arguments. `npm run` provides the entry point; otherwise it sits beside node.
+function npmCli() {
+  const fromNpm = process.env.npm_execpath;
+  if (fromNpm && /\.c?js$/.test(fromNpm)) return fromNpm;
+  const besideNode = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(besideNode)) return besideNode;
+  const unixLayout = join(dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  if (existsSync(unixLayout)) return unixLayout;
+  throw new Error("Can't find npm's entry point; run this through `npm run smoke:pack`.");
+}
+
 function npm(args, cwd) {
-  const cli = process.env.npm_execpath;
-  if (cli && /\.c?js$/.test(cli)) return run(process.execPath, [cli, ...args], cwd);
-  return execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], shell: process.platform === "win32" });
+  return run(process.execPath, [npmCli(), ...args], cwd);
 }
 
 try {

@@ -10,17 +10,37 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
 
 ### Added
 
-- `programscape-router check [--json]`: one live search (`"startup credits"`, up to 3 results) and one scrape
-  (`https://example.com`) per provider with a key set, plus a balance read for Firecrawl and Tavily. Each adapter is
-  called directly, with no routing or failover. The report gives, per call, ok or the failure class, the provider's
-  HTTP status, latency, and a result count or markdown length; for a failure, the provider's own message with every
-  key redacted. It never prints a result title, URL, snippet or page content, and never a balance amount. It writes
-  nothing to the ledger, never contacts Programscape and does not read the config file. Exits 0 only when at least
-  one call was made and every call passed. Also available as `runCheck()` and `formatCheck()`.
+- `programscape-router check [--json] [--verbose]`: one live search (`"startup credits"`, up to 3 results) and one
+  scrape (`https://example.com`) per provider with a key set, plus a balance read for Firecrawl and Tavily. Each
+  adapter is called directly, with no routing or failover. Per call, the report gives ok or the failure class, the
+  provider's HTTP status, its error code when the provider documents it (an allow-list per adapter), a fixed hint
+  from our own table, latency, and a result count or markdown length; and per provider, where the key came from.
+  The default and `--json` output are safe to share: no key, no result title, URL, snippet or page content, no
+  balance amount, and nothing a provider wrote. `--verbose` adds each provider's own error message (every key
+  redacted, whatever its length) under a "don't share" warning. It writes nothing to the ledger, never contacts
+  Programscape and does not read the config file. Exits 0 only when at least one call was made and every call
+  passed. Also available as `runCheck()` and `formatCheck()`.
+- Keys in the OS keychain: `programscape-router keys set <provider>` (a hidden prompt; `--stdin` for scripts),
+  `keys list` (set or not, and where from; never any part of a key) and `keys remove <provider>`. Keys are stored in
+  the macOS Keychain, Windows Credential Manager or the Linux Secret Service under service `programscape-router`,
+  account = the key's environment variable. Keys are read once at startup, and an environment variable always wins
+  over the keychain. Linux is pinned to the Secret Service (never the kernel keyring, which forgets keys at logout).
+  Where there is no keychain, the router still works with environment variables, and `keys` says why. `status` and
+  `check` show each key's source (`env`, `keychain` or none). `resolveKeys()` does the same for library users.
+- The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Only where there
+  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which.
+- Windows: config in `%APPDATA%\programscape-router`, state (ledger, sync record, and the token file if one is
+  needed) in `%LOCALAPPDATA%\programscape-router`; `XDG_CONFIG_HOME` and `XDG_STATE_HOME` still win when set. A
+  `chmod` never fails a write on Windows. Browser sign-in opens the URL as one argument with no shell, so `&` in it
+  survives. README instructions for PowerShell and cmd, labelled per system.
+- CI: typecheck and tests on Ubuntu, macOS and Windows with Node 22 and 24; the pack smoke test with a real keychain
+  round trip on macOS and Windows, and a run with no Secret Service on Ubuntu.
 - README: Troubleshooting, by failure class.
-- README: Keep your keys safe. Run the router through 1Password's `op run` with secret references, or set keys at a
-  hidden prompt for one Terminal window. The Claude Code and MCP client examples no longer save keys in plain text
-  by default.
+- README: Keep your keys safe. The OS keychain first, then 1Password's `op run` with secret references, other
+  managers' run commands, and a hidden prompt for one terminal window (zsh, PowerShell 7, Windows PowerShell 5.1).
+  The Claude Code and MCP client examples hold no keys by default.
+- README: exactly what goes to Programscape after `connect` (sign-in, a `my_plan` read, and five-field balance
+  reports) and what comes back.
 - `CHANGELOG.md`, and a pack-and-import smoke test in CI (`npm run smoke:pack`).
 
 ### Changed
@@ -38,6 +58,22 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   clean `dist/`.
 - `package.json` also exports `./package.json`.
 
+### Dependency audit: `@napi-rs/keyring` (optional)
+
+Checked on 2026-10-12 for 2.1.1, added as an `optionalDependency` and loaded lazily (`import()` only when a key isn't
+in the environment, or for `keys` and `connect`):
+
+- License MIT, like every platform package. No runtime dependencies, and no install scripts (no `postinstall`), so
+  nothing is compiled or downloaded at install time.
+- Maintained: published 2026-10-10, regular releases through 2026, about 5 million downloads a week; source at
+  github.com/Brooooooklyn/keyring-node (the napi-rs maintainer), wrapping the Rust `keyring` crate.
+- Prebuilt binaries, as their own optional packages, for darwin arm64/x64, win32 x64/arm64/ia32, linux x64/arm64 gnu
+  and musl, linux arm gnueabihf and riscv64, and freebsd x64. npm installs only the one matching the machine. They
+  are 0.5 to 3 MB unpacked; the wrapper is 47 kB.
+- `package-lock.json` pins all of them at 2.1.1 with integrity hashes.
+- If no prebuilt binary fits, or optional dependencies are skipped (`--omit=optional`), the module fails to load, and
+  the router carries on with environment variables.
+
 ### Removed from the public API
 
 These were exported by 0.1.0 but are internal. Use the CLI, or `createRouter()`, instead.
@@ -51,12 +87,12 @@ These were exported by 0.1.0 but are internal. Use the CLI, or `createRouter()`,
 
 ### Public API in 1.0.0
 
-Values: `createRouter`, `RouterError`, `loadConfig`, `parseConfig`, `ConfigError`, `runCheck`, `formatCheck`,
+Values: `createRouter`, `RouterError`, `resolveKeys`, `loadConfig`, `parseConfig`, `ConfigError`, `runCheck`, `formatCheck`,
 `CHECK_QUERY`, `CHECK_MAX_RESULTS`, `CHECK_URL`, `formatStatus`, `createMcpServer`, `runMcpServer`,
 `ProgramscapeError`, `PROVIDER_IDS`, `CAPABILITIES`, `VERSION`.
 
 Types: `Router`, `RouterOptions`, `RouterStatus`, `ProviderStatus`, `RouterErrorCode`, `RouterConfig`,
-`CreditEntry`, `ConfigLocation`, `CheckReport`, `CheckProvider`, `CheckCall`, `CheckCapability`, `CheckOptions`,
+`CreditEntry`, `ConfigLocation`, `ResolvedKeys`, `KeySource`, `CheckReport`, `CheckProvider`, `CheckCall`, `CheckCapability`, `CheckOptions`,
 `CapabilityOrder`, `OrderEntry`, `SkippedEntry`, `Tier`, `SyncResult`, `ProgramscapeSyncStatus`, `SyncMode`,
 `FetchLike`, and everything in `types.ts` (`ProviderId`, `Capability`, `SearchRequest`, `ScrapeRequest`,
 `SearchResult`, `ScrapeResult`, `SearchResponse`, `ScrapeResponse`, `Outcome`, `Attempt`, `OrderRule`, `Routing`,

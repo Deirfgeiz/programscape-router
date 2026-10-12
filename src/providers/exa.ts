@@ -49,6 +49,10 @@ function errorMessage(body: unknown): string | undefined {
   return error ?? tag;
 }
 
+function errorCode(body: unknown): string | undefined {
+  return isRecord(body) ? str(body.tag) : undefined;
+}
+
 function headers(ctx: CallContext): Record<string, string> {
   return { "x-api-key": ctx.key };
 }
@@ -62,6 +66,29 @@ export const exa: ProviderAdapter = {
     "https://exa.ai/docs/reference/get-contents",
     "https://exa.ai/docs/reference/error-codes",
   ],
+  // From https://exa.ai/docs/reference/error-codes: request-level tags, and /contents per-URL tags.
+  errorCodes: [
+    "INVALID_API_KEY",
+    "NO_MORE_CREDITS",
+    "API_KEY_BUDGET_EXCEEDED",
+    "TEAM_BUDGET_EXCEEDED",
+    "FEATURE_DISABLED",
+    "PROHIBITED_CONTENT",
+    "CONTENT_FILTER_ERROR",
+    "RATE_LIMIT_EXCEEDED",
+    "SERVICE_OVERLOADED",
+    "INVALID_REQUEST_BODY",
+    "INVALID_REQUEST",
+    "INVALID_NUM_RESULTS",
+    "NUM_RESULTS_EXCEEDED",
+    "CRAWL_NOT_FOUND",
+    /^CRAWL_HTTP_\d{3}$/,
+    "CRAWL_TIMEOUT",
+    "CRAWL_LIVECRAWL_TIMEOUT",
+    "SOURCE_NOT_AVAILABLE",
+    "UNSUPPORTED_URL",
+    "CRAWL_UNKNOWN_ERROR",
+  ],
 
   async search(req, ctx) {
     const body = await requestJson(ctx, `${BASE}/search`, {
@@ -73,6 +100,7 @@ export const exa: ProviderAdapter = {
       },
       classify,
       errorMessage,
+      errorCode,
     });
     if (!isRecord(body) || !Array.isArray(body.results)) throw invalid("Exa search answered without a results array");
     return asArray(body.results).flatMap((item) => {
@@ -98,6 +126,7 @@ export const exa: ProviderAdapter = {
       body: { urls: [req.url], text: true },
       classify,
       errorMessage,
+      errorCode,
     });
     if (!isRecord(body)) throw invalid("Exa contents answered with an unreadable body");
     const status = asArray(body.statuses).find(isRecord);
@@ -106,7 +135,7 @@ export const exa: ProviderAdapter = {
       const tag = str(error.tag);
       // httpStatusCode is the target page's status, not Exa's, so it goes in the message rather than `status`.
       const target = typeof error.httpStatusCode === "number" ? `; the page answered HTTP ${error.httpStatusCode}` : "";
-      throw new ProviderCallError("fetch_failed", `Exa could not fetch the page${tag ? ` (${tag})` : ""}${target}`);
+      throw new ProviderCallError("fetch_failed", `Exa could not fetch the page${tag ? ` (${tag})` : ""}${target}`, undefined, tag);
     }
     const result = asArray(body.results).find(isRecord);
     const text = result ? str(result.text) : undefined;

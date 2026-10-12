@@ -34,7 +34,7 @@ Routes web search and scrape calls across your own provider keys, spending the c
 
 Usage:
   programscape-router [mcp]                      Run the MCP server on stdio (default)
-  programscape-router check [--json]             One live search, scrape and balance read per key set
+  programscape-router check [--json] [--verbose] One live search, scrape and balance read per key set
   programscape-router keys set <provider> [--stdin]  Store a key in the OS keychain, asked for at a hidden prompt
   programscape-router keys list [--json]         Which keys are set and where from (never the keys)
   programscape-router keys remove <provider>     Delete a stored key from the OS keychain
@@ -50,7 +50,7 @@ Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_AP
 or, when a variable isn't set, from the OS keychain (see keys set). A variable wins over the keychain.
 Providers: exa, firecrawl, keenable, parallel, tavily.
 Find startup credits for these tools at https://programscape.com
-Nothing is sent to Programscape unless you run connect, and then only balance numbers.
+Nothing goes to Programscape unless you run connect; then only sign-in, a read of your plan, and balance numbers.
 `;
 
 function formatRouting(routing: Routing): string {
@@ -87,7 +87,15 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
       ...(noBrowser ? { openBrowser: false as const } : options.openBrowser !== undefined ? { openBrowser: options.openBrowser } : {}),
       ...(options.connectWaitMs !== undefined ? { waitMs: options.connectWaitMs } : {}),
     });
-    io.stdout(`Connected to Programscape. Token stored at ${result.tokenPath} (readable only by you).\n`);
+    io.stdout(
+      result.stored.kind === "keychain"
+        ? `Connected to Programscape. The sign-in token is stored in ${result.stored.label}.\n`
+        : `Connected to Programscape. The sign-in token is stored at ${result.stored.path} (${
+            process.platform === "win32"
+              ? "no keychain was available; the file is protected by your Windows profile folder's default permissions"
+              : "no keychain was available; the file is readable only by you"
+          }).\n`,
+    );
     const config = options.config ?? loadConfig(env, options.cwd).config;
     io.stdout(
       config.programscape?.sync === "auto"
@@ -140,8 +148,10 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   if (command === "check") {
     // Calls each adapter directly: no config, no routing, no ledger, no Programscape.
     const json = takeFlag(args, "--json");
+    const verbose = takeFlag(args, "--verbose");
     const report = await runCheck({
       env,
+      verbose,
       keys: options.keys ?? (await resolveKeys(keychainOptions)),
       ...(options.fetch ? { fetch: options.fetch } : {}),
       ...(options.now ? { now: options.now } : {}),

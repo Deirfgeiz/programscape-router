@@ -21,6 +21,11 @@ export interface ProviderAdapter {
   docs: string[];
   search?: (req: SearchRequest, ctx: CallContext) => Promise<SearchResult[]>;
   scrape?: (req: ScrapeRequest, ctx: CallContext) => Promise<ScrapeResult>;
+  /**
+   * Error codes the provider documents (tags, `code` fields), which `check` may show. Anything else a provider says
+   * stays out of shareable output, since an error body can echo account details back.
+   */
+  errorCodes?: ReadonlyArray<string | RegExp>;
   /** Reads the account's own balance with the founder's key, where the provider publishes an endpoint. */
   balance?: (ctx: CallContext) => Promise<BalanceReading>;
   /** How long a balance reading stays fresh, to respect the provider's limits on that endpoint. */
@@ -30,12 +35,15 @@ export interface ProviderAdapter {
 export class ProviderCallError extends Error {
   readonly outcome: Exclude<Outcome, "ok">;
   readonly status: number | undefined;
+  /** The provider's machine-readable error code (a tag or `code` field), when it gave one. Not yet allow-listed. */
+  readonly code: string | undefined;
 
-  constructor(outcome: Exclude<Outcome, "ok">, message: string, status?: number) {
+  constructor(outcome: Exclude<Outcome, "ok">, message: string, status?: number, code?: string) {
     super(message);
     this.name = "ProviderCallError";
     this.outcome = outcome;
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -58,6 +66,8 @@ export interface RequestOptions {
   classify?: (status: number, body: unknown) => Exclude<Outcome, "ok"> | undefined;
   /** Pull the provider's human-readable message out of its error body. */
   errorMessage?: (body: unknown) => string | undefined;
+  /** Pull the provider's machine-readable error code out of its error body. */
+  errorCode?: (body: unknown) => string | undefined;
 }
 
 /** One JSON request with a timeout, never following redirects. Throws ProviderCallError on every failure. */
@@ -105,7 +115,8 @@ export async function requestJson(ctx: CallContext, url: string, options: Reques
   if (!response.ok) {
     const outcome = options.classify?.(response.status, body) ?? classifyStatus(response.status);
     const detail = options.errorMessage?.(body) ?? genericErrorMessage(body);
-    throw new ProviderCallError(outcome, detail ?? `HTTP ${response.status}`, response.status);
+    const code = options.errorCode?.(body);
+    throw new ProviderCallError(outcome, detail ?? `HTTP ${response.status}`, response.status, typeof code === "string" ? code : undefined);
   }
   if (body === undefined) {
     throw new ProviderCallError("invalid_response", "The provider answered with an empty or non-JSON body", response.status);
@@ -158,6 +169,12 @@ export function isoDate(value: unknown): string | undefined {
 export function clampResults(requested: number | undefined, max: number): number {
   const wanted = requested === undefined ? 10 : Math.floor(requested);
   return Math.min(Math.max(wanted, 1), max);
+}
+
+/** Whether `code` is one of the adapter's documented error codes. */
+export function isDocumentedCode(adapter: Pick<ProviderAdapter, "errorCodes">, code: string | undefined): code is string {
+  if (!code || code.length > 64) return false;
+  return (adapter.errorCodes ?? []).some((allowed) => (typeof allowed === "string" ? allowed === code : allowed.test(code)));
 }
 
 export function invalid(message: string): ProviderCallError {

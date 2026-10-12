@@ -9,7 +9,8 @@ import type { RouterConfig } from "../src/config.js";
 import { connect, disconnect } from "../src/programscape/connect.js";
 import { ProgramscapeError, programscapeFetch } from "../src/programscape/guard.js";
 import { amountIssue, mapProgram, readPlanPrograms } from "../src/programscape/plan.js";
-import { readSyncState, readTokenFile, tokenPath } from "../src/programscape/store.js";
+import { TOKEN_KEYCHAIN_ACCOUNT, readSyncState, readTokenFile, tokenPath } from "../src/programscape/store.js";
+import { fakeKeyring } from "./fake-keyring.js";
 import { AUTO_SYNC_INTERVAL_MS } from "../src/programscape/sync.js";
 import { createRouter } from "../src/router.js";
 import { type FakeOptions, type KeptProgram, combine, fakeProgramscape } from "./programscape-fake.js";
@@ -19,7 +20,12 @@ const START = new Date("2026-10-11T12:00:00Z");
 
 function homes() {
   const root = mkdtempSync(join(tmpdir(), "psr-sync-"));
-  return { XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") };
+  // Each home gets its own keychain service too, so tokens stored by one test's connect stay with that home.
+  return {
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_STATE_HOME: join(root, "state"),
+    PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: `programscape-router-test-${root.slice(-8)}`,
+  };
 }
 
 const FIRECRAWL_ONE: KeptProgram[] = [
@@ -129,28 +135,37 @@ describe("connect", () => {
     if ("lan" in reachable) expect(reachable.lan).toBe(false);
   });
 
-  it("stores the tokens with mode 600 in a directory with mode 700", async () => {
+  it("stores the tokens in the OS keychain, and leaves no token file", async () => {
     const fake = fakeProgramscape();
     const env = homes();
     const result = await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
-    expect(result.tokenPath).toBe(join(env.XDG_CONFIG_HOME, "programscape-router", "programscape-token.json"));
-    // POSIX modes don't exist on Windows; there the profile folder's own permissions protect the file.
-    if (process.platform !== "win32") {
-      expect(statSync(result.tokenPath).mode & 0o777).toBe(0o600);
-      expect(statSync(dirname(result.tokenPath)).mode & 0o777).toBe(0o700);
-    }
+    expect(result.stored).toEqual({ kind: "keychain", label: expect.any(String) });
+    expect(existsSync(tokenPath(env))).toBe(false);
+    const entry = fakeKeyring.peek(env.PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT);
+    expect(JSON.parse(entry ?? "{}")).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET", refreshToken: "ps-REFRESH-1-TOKENSECRET" });
     const stored = await readTokenFile(env);
     expect(stored).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET", refreshToken: "ps-REFRESH-1-TOKENSECRET" });
     expect(stored?.expiresAt).toBe("2026-10-11T13:00:00.000Z");
+    expect(stored).not.toHaveProperty("email");
+
+    await disconnect({ env, fetch: fake.fetch });
+    expect(fakeKeyring.peek(env.PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBeUndefined();
   });
 
-  it("reuses the cached client when the same port is free, and registers again otherwise", async () => {
+  it("without a keychain, stores the tokens in a file: mode 600 in a mode 700 folder on macOS and Linux", async () => {
+    fakeKeyring.available = false;
     const fake = fakeProgramscape();
     const env = homes();
-    await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
-    await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
-    expect(fake.registrations).toHaveLength(1);
-    expect(fake.authorizations[1]?.get("redirect_uri")).toBe(fake.authorizations[0]?.get("redirect_uri"));
+    const result = await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
+    expect(result.stored).toEqual({ kind: "file", path: join(env.XDG_CONFIG_HOME, "programscape-router", "programscape-token.json") });
+    // POSIX modes don't exist on Windows; there the profile folder's default permissions are all that protect it.
+    if (process.platform !== "win32") {
+      expect(statSync(tokenPath(env)).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(tokenPath(env))).mode & 0o777).toBe(0o700);
+    }
+    expect(await readTokenFile(env)).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET" });
+    await disconnect({ env, fetch: fake.fetch });
+    expect(existsSync(tokenPath(env))).toBe(false);
   });
 
   it("says it connected, names no account (the token response doesn't), and never prints a token", async () => {
@@ -165,7 +180,7 @@ describe("connect", () => {
       openBrowser: fake.browser,
     });
     expect(code).toBe(0);
-    expect(out.join("")).toContain("Connected to Programscape. Token stored");
+    expect(out.join("")).toContain("Connected to Programscape. The sign-in token is stored in ");
     expect(out.join("") + err.join("")).not.toContain("founder@example.com");
     expect(out.join("") + err.join("")).not.toContain("TOKENSECRET");
   });
@@ -320,8 +335,11 @@ describe("sync", () => {
     const sent = reports(fake);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ programId: "firecrawl.startup-deal", amount: 1000 });
+    // Checked on the tool calls: random OAuth values (state, PKCE) in other requests can contain "600" by chance.
+    expect(JSON.stringify(fake.toolCalls)).not.toContain("77777");
+    expect(JSON.stringify(fake.toolCalls)).not.toContain("600");
     expect(JSON.stringify(fake.seen)).not.toContain("77777");
-    expect(JSON.stringify(fake.seen)).not.toContain("600");
+    expect(JSON.stringify(fake.seen)).not.toContain("Exa grant");
   });
 
   it("treats a later reading already on the plan as success with no change", async () => {
@@ -363,7 +381,6 @@ describe("sync", () => {
     expect(refreshes[0]?.get("refresh_token")).toBe("ps-REFRESH-1-TOKENSECRET");
     expect(refreshes[0]?.get("client_id")).toBe("client-1");
     expect(await readTokenFile(env)).toMatchObject({ accessToken: "ps-ACCESS-2-TOKENSECRET", refreshToken: "ps-REFRESH-2-TOKENSECRET" });
-    if (process.platform !== "win32") expect(statSync(tokenPath(env)).mode & 0o777).toBe(0o600);
     expect(reports(fake)).toHaveLength(1);
     expect(fake.toolCalls.at(-1)?.authorization).toBe("Bearer ps-ACCESS-2-TOKENSECRET");
   });
@@ -432,7 +449,9 @@ describe("automatic sync", () => {
     expect(reports(fake)).toHaveLength(1);
 
     // A new process an hour later still waits: the six hours are kept on disk.
-    await router({ programscape: { sync: "auto" } }).status({ refresh: true });
+    const later = router({ programscape: { sync: "auto" } });
+    await later.status({ refresh: true });
+    await later.flush(); // its background sync settles before the clock moves on
     expect(reports(fake)).toHaveLength(1);
 
     advance(AUTO_SYNC_INTERVAL_MS);

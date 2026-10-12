@@ -31,7 +31,7 @@ import {
   readClientCache,
   readSyncState,
   readTokenFile,
-  tokenPath,
+  type TokenLocation,
   writeClientCache,
   writeSyncState,
   writeTokenFile,
@@ -53,7 +53,8 @@ export interface ConnectOptions {
 }
 
 export interface ConnectResult {
-  tokenPath: string;
+  /** Where the tokens were stored. */
+  stored: TokenLocation;
 }
 
 /**
@@ -206,7 +207,7 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
       throw error;
     }
     const at = now();
-    await writeTokenFile(env, {
+    const stored = await writeTokenFile(env, {
       version: 1,
       issuer: metadata.issuer,
       clientId,
@@ -220,7 +221,7 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
       delete syncState.off;
       await writeSyncState(env, syncState);
     }
-    return { tokenPath: tokenPath(env) };
+    return { stored };
   } finally {
     await callback.close();
   }

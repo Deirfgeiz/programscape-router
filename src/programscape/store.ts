@@ -1,17 +1,18 @@
 /**
  * Local files for the opt-in Programscape balance sync.
  *
- * - The token file holds the OAuth tokens. It exists only between `connect` and `disconnect`. On macOS and Linux it
- *   is written with mode 600 inside a directory with mode 700. On Windows, POSIX modes don't apply: the file sits in
- *   the user's own profile folder (%LOCALAPPDATA%), which Windows restricts to that user by default. Tokens are
- *   never printed or logged.
+ * - The OAuth tokens live in the OS keychain (account programscape-token) between `connect` and `disconnect`. Only
+ *   where there is no keychain, or it refuses the entry, do they go in the token file: mode 600 inside a directory
+ *   with mode 700 on macOS and Linux. On Windows, POSIX modes don't apply, so the file is protected only by the
+ *   default permissions of the user's profile folder (%LOCALAPPDATA%). Tokens are never printed or logged.
  * - The client file caches the dynamically registered public client (no secret), so a later `connect` can reuse it
  *   when the same loopback port is free.
  * - The sync state file records, per provider, when a sync was last tried and how it ended. It holds program ids,
  *   times and the outcome, never a token, key, query or URL.
  */
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { type Keychain, openKeychain } from "../keys.js";
 import { stateDir, tokenDir } from "../paths.js";
 import { PROVIDER_IDS, type ProviderId } from "../types.js";
 
@@ -102,8 +103,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const text = (value: unknown): string | undefined => (typeof value === "string" && value.length > 0 ? value : undefined);
 
-export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile | undefined> {
-  const raw = await readJson(tokenPath(env));
+/** The keychain account the Programscape tokens are stored under (service programscape-router). */
+export const TOKEN_KEYCHAIN_ACCOUNT = "programscape-token";
+
+/** Where the tokens are kept: the OS keychain when it can hold them, otherwise a file. */
+export type TokenLocation = { kind: "keychain"; label: string } | { kind: "file"; path: string };
+
+function parseTokens(raw: unknown): TokenFile | undefined {
   if (!isRecord(raw)) return undefined;
   const issuer = text(raw.issuer);
   const clientId = text(raw.clientId);
@@ -123,20 +129,62 @@ export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile |
   };
 }
 
-export function writeTokenFile(env: NodeJS.ProcessEnv, tokens: TokenFile): Promise<void> {
-  return writeSecureJson(tokenPath(env), tokens);
+/** The OS keychain, or undefined when there is none here (the tokens then live in a file). */
+async function tokenKeychain(env: NodeJS.ProcessEnv): Promise<Keychain | undefined> {
+  try {
+    return await openKeychain({ env });
+  } catch {
+    return undefined;
+  }
 }
 
+/** The stored tokens: from the OS keychain, or from the token file when the keychain has none or can't be read. */
+export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile | undefined> {
+  const keychain = await tokenKeychain(env);
+  if (keychain) {
+    try {
+      const stored = await keychain.get(TOKEN_KEYCHAIN_ACCOUNT);
+      if (stored) {
+        const tokens = parseTokens(JSON.parse(stored));
+        if (tokens) return tokens;
+      }
+    } catch {
+      // Unreadable keychain or entry: fall through to the file.
+    }
+  }
+  return parseTokens(await readJson(tokenPath(env)));
+}
+
+/**
+ * Stores the tokens in the OS keychain (the same store as provider keys) and removes any token file. Where the
+ * keychain is unavailable or refuses the entry, writes the token file instead: mode 600 in a mode 700 folder on
+ * macOS and Linux; on Windows, %LOCALAPPDATA%, protected only by the profile folder's default permissions.
+ */
+export async function writeTokenFile(env: NodeJS.ProcessEnv, tokens: TokenFile): Promise<TokenLocation> {
+  const keychain = await tokenKeychain(env);
+  if (keychain) {
+    try {
+      await keychain.set(TOKEN_KEYCHAIN_ACCOUNT, JSON.stringify(tokens));
+      await rm(tokenPath(env), { force: true });
+      return { kind: "keychain", label: keychain.label };
+    } catch {
+      // For example Windows Credential Manager's size limit: keep the tokens in the file instead.
+    }
+  }
+  await writeSecureJson(tokenPath(env), tokens);
+  return { kind: "file", path: tokenPath(env) };
+}
+
+/** Deletes the tokens from the keychain and the token file, wherever they are. */
 export async function deleteTokenFile(env: NodeJS.ProcessEnv): Promise<void> {
+  const keychain = await tokenKeychain(env);
+  if (keychain) await keychain.remove(TOKEN_KEYCHAIN_ACCOUNT).catch(() => false);
   await rm(tokenPath(env), { force: true });
 }
 
+/** Whether tokens are stored, in the keychain or the file. */
 export async function hasTokenFile(env: NodeJS.ProcessEnv): Promise<boolean> {
-  try {
-    return (await stat(tokenPath(env))).isFile();
-  } catch {
-    return false;
-  }
+  return (await readTokenFile(env)) !== undefined;
 }
 
 export async function readClientCache(env: NodeJS.ProcessEnv): Promise<ClientCache | undefined> {
