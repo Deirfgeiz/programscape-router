@@ -1,0 +1,10 @@
+export { createRouter, RouterError } from "./router.js";
+export type { Router, RouterOptions, RouterStatus, ProviderStatus, RouterErrorCode } from "./router.js";
+export { loadConfig, parseConfig, ConfigError, configSchema } from "./config.js";
+export type { RouterConfig } from "./config.js";
+export { computeOrder } from "./order.js";
+export type { CapabilityOrder, OrderEntry, SkippedEntry, ProviderStanding, Tier } from "./order.js";
+export { formatStatus } from "./format.js";
+export { createMcpServer, runMcpServer } from "./mcp.js";
+export { VERSION } from "./version.js";
+export * from "./types.js";
