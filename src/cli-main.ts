@@ -179,12 +179,12 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     );
     if (result.outcome === "local-incomplete") {
       io.stderr(`Could not verify local token removal. Unlock or repair the reported store, then rerun \`programscape-router disconnect\`:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
-      io.stderr("Check programscape.com → My plans → connected apps for any router access as well.\n");
+      io.stderr("Check Apps connected to your plan on programscape.com (My plans) for any router access as well.\n");
       return 1;
     }
     if (result.outcome === "remote-unverified") {
       io.stdout("Local connection cleared; remote access was not verified. You can connect again.\n");
-      io.stderr("Check programscape.com → My plans → connected apps and remove programscape-router if it is listed.\n");
+      io.stderr("Check Apps connected to your plan on programscape.com (My plans) and remove programscape-router if it is listed.\n");
       return 2;
     }
     io.stdout("Disconnected: local tokens removed and known Programscape tokens revoked.\n");

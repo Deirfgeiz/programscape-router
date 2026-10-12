@@ -531,9 +531,9 @@ file-only connection made without a keychain backend can disconnect successfully
 shows that it never attempted a keychain write. If local removal cannot be verified, `disconnect` exits 1; unlock
 or repair the reported store and rerun `disconnect`. If local tokens are gone but remote revocation cannot be
 verified, it clears the local connection, exits 2, and asks you to check
-`programscape.com → My plans → connected apps` for `programscape-router`. You may then connect again. A token response
+**Apps connected to your plan** on programscape.com → My plans for `programscape-router`. You may then connect again. A token response
 lost during sign-in or refresh can leave an unknown remote grant; `disconnect` also clears local state and gives
-the same warning. Removing the router in connected apps is the way to revoke an unknown grant.
+the same warning. Disconnecting the router there is the way to revoke an unknown grant.
 
 If a local token cannot be removed, `disconnect` names the store and its entry so you can inspect it:
 
@@ -546,7 +546,7 @@ If a local token cannot be removed, `disconnect` names the store and its entry s
 - If Programscape didn't confirm the revocation, also remove the router's access on programscape.com.
 
 If a token entry is corrupted, `disconnect` may remove it locally but cannot revoke a grant it cannot read. It
-reports the remote result as unverified and points you to connected apps. You do not need to edit router files.
+reports the remote result as unverified and points you to **Apps connected to your plan** on My plans. You do not need to edit router files.
 
 ### Which program a balance goes to
 

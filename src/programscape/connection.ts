@@ -18,7 +18,7 @@ export const RECONNECT_MESSAGE =
   "Run `programscape-router disconnect`, then `programscape-router connect` to sign in again.";
 
 export const REMOTE_UNCERTAIN_MESSAGE =
-  "Programscape may have issued tokens that the router could not save. Run `programscape-router disconnect`; it clears local state and tells you how to check connected apps on programscape.com.";
+  "Programscape may have issued tokens that the router could not save. Run `programscape-router disconnect`; it clears local state and tells you how to check Apps connected to your plan on programscape.com (My plans).";
 
 function sameGrant(a: TokenFile | undefined, b: TokenFile): boolean {
   return a?.clientId === b.clientId && a.accessToken === b.accessToken && a.refreshToken === b.refreshToken;
@@ -121,7 +121,7 @@ export class Connection {
           ]);
           const revoked = rollback.every((result) => result.status === "fulfilled" && result.value);
           if (revoked) await transitionConnection(env, "refresh-refused").catch(() => undefined);
-          throw new ProgramscapeError("refused", `Could not save Programscape's rotated tokens. ${revoked ? "The new tokens were revoked." : "The new tokens could not be confirmed revoked."} Run \`programscape-router disconnect\`${revoked ? "." : " and check connected apps on programscape.com."}`);
+          throw new ProgramscapeError("refused", `Could not save Programscape's rotated tokens. ${revoked ? "The new tokens were revoked." : "The new tokens could not be confirmed revoked."} Run \`programscape-router disconnect\`${revoked ? "." : " and check Apps connected to your plan on programscape.com (My plans)."}`);
         }
         this.tokens = updated;
         return updated.accessToken;

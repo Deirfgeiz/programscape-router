@@ -313,10 +313,10 @@ async function finishConnect(
         occupied
           ? revoked
             ? "Another Programscape connection was stored during sign-in. Run `programscape-router disconnect` before connecting again."
-            : "Another Programscape connection was stored during sign-in, and the new grant could not be confirmed revoked. Run `programscape-router disconnect` and check connected apps on programscape.com."
+            : "Another Programscape connection was stored during sign-in, and the new grant could not be confirmed revoked. Run `programscape-router disconnect` and check Apps connected to your plan on programscape.com (My plans)."
           : revoked
             ? "Could not finish the Programscape sign-in. The new grant was revoked; run `programscape-router disconnect` before trying again if a local entry remains."
-            : "Could not save the Programscape sign-in tokens, and the new grant could not be confirmed revoked. Run `programscape-router disconnect` and check connected apps on programscape.com.",
+            : "Could not save the Programscape sign-in tokens, and the new grant could not be confirmed revoked. Run `programscape-router disconnect` and check Apps connected to your plan on programscape.com (My plans).",
       );
     }
     return { stored };

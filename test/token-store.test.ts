@@ -167,7 +167,7 @@ describe("disconnect", () => {
     fake.behaviour.revokeFails = true;
     const err: string[] = [];
     expect(await main(["disconnect"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env, fetch: fake.fetch })).toBe(2);
-    expect(err.join("")).toContain("connected apps");
+    expect(err.join("")).toContain("Apps connected to your plan");
     expect(err.join("")).not.toContain("local token removal");
     expect(await readTokenFile(env)).toBeUndefined();
     expect(await readConnectionState(env)).toBeUndefined();
@@ -188,7 +188,7 @@ describe("disconnect", () => {
     const err: string[] = [];
     expect(await main(["disconnect"], { stdout: (line) => out.push(line), stderr: (line) => err.push(line) }, { env, fetch: fake.fetch })).toBe(2);
     expect(out.join("")).toContain("Local connection cleared; remote access was not verified");
-    expect(err.join("")).toContain("connected apps");
+    expect(err.join("")).toContain("Apps connected to your plan");
     expect(await readConnectionState(env)).toBeUndefined();
     expect(fake.access.size).toBe(1);
   });
@@ -223,7 +223,7 @@ describe("disconnect", () => {
       expect(code).toBe(2);
       expect(out.join("")).not.toContain("Nothing to do");
       expect(out.join("")).toContain("Local connection cleared; remote access was not verified");
-      expect(err.join("")).toContain("connected apps");
+      expect(err.join("")).toContain("Apps connected to your plan");
       expect(inKeychain()).toBeUndefined();
       expect(await readConnectionState(env)).toBeUndefined();
     } finally {
@@ -239,7 +239,7 @@ describe("disconnect", () => {
     const code = await main(["disconnect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, { env, fetch: async () => { throw new Error("unexpected network call"); } });
     expect(code).toBe(2);
     expect(out.join("")).not.toContain("Nothing to do");
-    expect(err.join("")).toContain("connected apps");
+    expect(err.join("")).toContain("Apps connected to your plan");
     expect(inKeychain()).toBeUndefined();
     expect(await readConnectionState(env)).toBeUndefined();
   });
@@ -315,7 +315,7 @@ describe("disconnect", () => {
     expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
     const warning: string[] = [];
     expect(await main(["disconnect"], { stdout: () => {}, stderr: (line) => warning.push(line) }, { env, fetch: fake.fetch })).toBe(2);
-    expect(warning.join("")).toContain("connected apps");
+    expect(warning.join("")).toContain("Apps connected to your plan");
     expect(await readConnectionState(env)).toBeUndefined();
     expect(await main(["connect"], io, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(0);
   });

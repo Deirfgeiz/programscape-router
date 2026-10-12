@@ -441,7 +441,7 @@ describe("sync", () => {
     });
     const error = await connection.session((call) => call("my_plan", {})).catch((reason: unknown) => reason);
     expect(error).toBeInstanceOf(ProgramscapeError);
-    expect((error as Error).message).toContain("check connected apps on programscape.com");
+    expect((error as Error).message).toContain("check Apps connected to your plan on programscape.com");
     expect((error as Error).message).not.toContain("TOKENSECRET");
     expect(fake.refresh.has("ps-REFRESH-2-TOKENSECRET")).toBe(true);
     expect((await readConnectionState(env))?.phase).toBe("cleanup-needed");
