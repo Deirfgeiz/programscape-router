@@ -84,6 +84,31 @@ describe("credits ending first", () => {
     expect(order.entries[1]?.reason).toContain('"grant" spent');
   });
 
+  it("spends credits a founder still holds before paid usage, even on a provider marked paid: true", () => {
+    const order = computeOrder(
+      "search",
+      [
+        standing("parallel", { paid: true, balances: [credit({ label: "startup credits", remaining: 100, total: 250, endsOn: "2026-12-01" })] }),
+        standing("tavily"),
+      ],
+      undefined,
+      NOW,
+    );
+    expect(order.entries.map((entry) => entry.provider)).toEqual(["parallel", "tavily"]);
+    expect(order.entries[0]?.tier).toBe("credits-ending");
+  });
+
+  it("puts a paid: true provider last once its known credits are spent", () => {
+    const order = computeOrder(
+      "search",
+      [standing("parallel", { paid: true, balances: [credit({ label: "startup credits", remaining: 0, total: 250 })] }), standing("tavily")],
+      undefined,
+      NOW,
+    );
+    expect(order.entries.map((entry) => entry.provider)).toEqual(["tavily", "parallel"]);
+    expect(order.entries[1]?.tier).toBe("pay-as-you-go");
+  });
+
   it("skips a provider with no credits left when the founder says paid: false", () => {
     const order = computeOrder(
       "search",

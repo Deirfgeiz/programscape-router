@@ -33,6 +33,9 @@ its source file.
 
 ## Quick check
 
+Not on npm yet: until it is, use `npx github:Deirfgeiz/programscape-router` wherever this page says
+`npx programscape-router`. It builds itself on install.
+
 ```bash
 export TAVILY_API_KEY=tvly-...
 export FIRECRAWL_API_KEY=fc-...
@@ -105,7 +108,7 @@ Every result says which provider served it and why:
 1. Providers whose credits have an end date come first, the soonest first. A monthly allowance ends when its
    billing period ends (Firecrawl reports this). Credits you enter in config can carry `expiresOn`.
 2. Then providers whose credits have no known end date. A provider you've told the router nothing about goes here.
-3. Pay-as-you-go comes last: a provider you mark `"paid": true`, or one whose known credits are all spent or ended.
+3. Pay-as-you-go comes last: a provider whose known credits are all spent or ended, or one you mark `"paid": true` with no credits left that the router knows of. Credits you still hold are always spent before paid usage.
 
 Ties go to the larger share remaining (remaining divided by the plan or award, only where both are known; a known
 share goes before an unknown one), then to the provider id, alphabetically. Amounts in different units are never
@@ -149,7 +152,7 @@ Config is optional. The router looks in this order:
 |---|---|
 | `order.search`, `order.scrape` | Your order. Leave it out to use credits ending first. |
 | `providers.<id>.credits[]` | Credits you hold. `label`, `expiresOn` (YYYY-MM-DD, usable through that day, UTC), `remaining`, `award`, `unit`. All optional; what you leave out stays unknown. |
-| `providers.<id>.paid: true` | You pay as you go with this provider; it goes last. |
+| `providers.<id>.paid: true` | You pay as you go with this provider; once its known credits are spent, it goes last. |
 | `providers.<id>.paid: false` | You don't pay with this provider; once its known credits are spent, it is skipped. |
 | `timeoutMs` | Per-call timeout (default 30 s for search, 60 s for scrape). |
 

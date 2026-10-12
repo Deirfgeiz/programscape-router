@@ -6,7 +6,9 @@
  * Default rule, "credits ending first":
  *   1. Providers whose credits carry an end date, soonest end date first.
  *   2. Providers whose credits have no known end date (or nothing is known about them).
- *   3. Pay-as-you-go: marked `paid: true`, or every known credit is spent or ended.
+ *   3. Pay-as-you-go: every known credit is spent or ended, or none is known and the provider is
+ *      marked `paid: true`. Credits the founder still holds are always spent before paid usage,
+ *      even on a provider marked `paid: true`.
  *   Ties: the larger share remaining (remaining / plan or award, only where both are known)
  *   goes first, providers with a known share before those without; then provider id.
  *   Amounts in different units are never compared or added.
@@ -117,9 +119,6 @@ export function unavailableReason(standing: ProviderStanding, now: Date): string
 
 /** Where a usable provider sits under the default rule, or why it is skipped. */
 export function place(standing: ProviderStanding, now: Date): Placement | { skip: string } {
-  if (standing.paid === true) {
-    return { tier: "pay-as-you-go", basis: "Marked paid in your config, so it goes after every provider with credits." };
-  }
   const credits = standing.balances.filter((balance) => balance.kind === "credits");
   const live = credits.filter((balance) => !isEnded(balance, now) && !isSpent(balance));
 
@@ -150,6 +149,10 @@ export function place(standing: ProviderStanding, now: Date): Placement | { skip
       basis: `Credits with no known end date: ${describe(best)}.`,
       ...(share !== undefined ? { share } : {}),
     };
+  }
+
+  if (standing.paid === true) {
+    return { tier: "pay-as-you-go", basis: "Marked paid in your config with no credits left in what is known, so it goes after every provider with credits." };
   }
 
   if (credits.length > 0) {
