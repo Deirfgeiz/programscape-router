@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# CI never calls programscape.com: the CLI steps below would otherwise read its public catalog (0151). The catalog read
+# has its own tests, with a mocked fetch.
+env:
+  PROGRAMSCAPE_ROUTER_CATALOG: "off"
+
 jobs:
   check:
     name: typecheck, test, build (${{ matrix.os }}, Node ${{ matrix.node }})
