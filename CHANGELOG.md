@@ -67,7 +67,8 @@ programscape.com. If the catalog can't be reached, the read fails quietly and th
 ### Linkup and You.com
 
 Two new providers, each built from its official API docs (read October 12, 2026; linked at the top of each adapter).
-Not yet run against the live APIs with real keys: `programscape-router check` does that.
+Checked live on October 12, 2026 with `programscape-router check`: search, scrape and balance passed for both, and
+all seven providers passed (18 of 18 calls).
 
 #### Added
 
