@@ -35,7 +35,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function toolErrorWords(result: Record<string, unknown>): string {
   const first = Array.isArray(result.content) ? result.content.find(isRecord) : undefined;
   const words = first && typeof first.text === "string" ? first.text.replace(/\s+/g, " ").trim() : "";
-  return words.length > 300 ? `${words.slice(0, 297)}...` : words || "Programscape refused the call.";
+  return words.length > 500 ? `${words.slice(0, 497)}...` : words || "Programscape refused the call.";
 }
 
 function toolOutput(result: unknown): unknown {

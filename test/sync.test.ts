@@ -7,7 +7,7 @@ import { main } from "../src/cli-main.js";
 import type { RouterConfig } from "../src/config.js";
 import { connect, disconnect } from "../src/programscape/connect.js";
 import { ProgramscapeError, programscapeFetch } from "../src/programscape/guard.js";
-import { mapProgram, readPlanPrograms } from "../src/programscape/plan.js";
+import { amountIssue, mapProgram, readPlanPrograms } from "../src/programscape/plan.js";
 import { readSyncState, readTokenFile, tokenPath } from "../src/programscape/store.js";
 import { AUTO_SYNC_INTERVAL_MS } from "../src/programscape/sync.js";
 import { createRouter } from "../src/router.js";
@@ -22,8 +22,8 @@ function homes() {
 }
 
 const FIRECRAWL_ONE: KeptProgram[] = [
-  { id: "firecrawl.startup-deal", provider: "firecrawl", approval: "approved" },
-  { id: "aws.activate-founders", provider: "aws", approval: "approved" },
+  { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
+  { id: "aws.activate-founders", provider: "aws", approved: true },
 ];
 
 const PROVIDER_ROUTES: Record<string, Responder | Responder[]> = {
@@ -90,7 +90,7 @@ describe("connect", () => {
     expect(createHash("sha256").update(verifier).digest("base64url")).toBe(authorization.get("code_challenge"));
 
     // The authorization URL is printed for headless use; tokens never are.
-    expect(printed.join("\n")).toContain("https://programscape.com/oauth/authorize?");
+    expect(printed.join("\n")).toContain("https://programscape.com/connect?");
     expect(printed.join("\n")).not.toContain("TOKENSECRET");
   });
 
@@ -115,25 +115,21 @@ describe("connect", () => {
     expect(fake.authorizations[1]?.get("redirect_uri")).toBe(fake.authorizations[0]?.get("redirect_uri"));
   });
 
-  it("says who it connected as only when Programscape says so, and never prints a token", async () => {
-    for (const [extras, expected] of [
-      [{ email: "founder@example.com" }, "Connected to Programscape as founder@example.com."],
-      [{}, "Connected to Programscape. Token stored"],
-    ] as const) {
-      const fake = fakeProgramscape({ tokenExtras: extras });
-      const out: string[] = [];
-      const err: string[] = [];
-      const code = await main(["connect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, {
-        env: homes(),
-        config: {},
-        fetch: fake.fetch,
-        ledgerPath: false,
-        openBrowser: fake.browser,
-      });
-      expect(code).toBe(0);
-      expect(out.join("")).toContain(expected);
-      expect(out.join("") + err.join("")).not.toContain("TOKENSECRET");
-    }
+  it("says it connected, names no account (the token response doesn't), and never prints a token", async () => {
+    const fake = fakeProgramscape({ tokenExtras: { email: "founder@example.com" } });
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await main(["connect"], { stdout: (t) => out.push(t), stderr: (t) => err.push(t) }, {
+      env: homes(),
+      config: {},
+      fetch: fake.fetch,
+      ledgerPath: false,
+      openBrowser: fake.browser,
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("Connected to Programscape. Token stored");
+    expect(out.join("") + err.join("")).not.toContain("founder@example.com");
+    expect(out.join("") + err.join("")).not.toContain("TOKENSECRET");
   });
 
   it("ignores a redirect that doesn't carry this sign-in's state", async () => {
@@ -181,14 +177,26 @@ describe("the programscape.com-only fetch", () => {
 
 describe("mapping a provider's balance to a plan program", () => {
   const plan = (kept: KeptProgram[]) =>
-    readPlanPrograms({ kept: kept.map((program) => ({ id: program.id, provider: { id: program.provider }, ...(program.approval ? { approval: program.approval } : {}) })) });
+    readPlanPrograms({ kept: kept.map((program) => ({ id: program.id, provider: { id: program.provider }, ...(program.approved ? { approved: true } : {}) })) });
+
+  it("reads approval only from approved: true", () => {
+    const programs = readPlanPrograms({ kept: [{ id: "a.x", provider: { id: "a" }, approved: true }, { id: "a.y", provider: { id: "a" }, approval: "approved" }, { id: "a.z", provider: { id: "a" } }] });
+    expect(programs.map((program) => program.approved)).toEqual([true, false, false]);
+  });
+
+  it("checks amounts the way a plan records them", () => {
+    expect(amountIssue(10.25, "usd")).toBeUndefined();
+    expect(amountIssue(10.255, "usd")).toContain("fractions of a cent");
+    expect(amountIssue(1000, "credits")).toBeUndefined();
+    expect(amountIssue(-1, "requests")).toContain("below zero");
+  });
 
   it("uses the one kept, approved program from that provider", () => {
     expect(mapProgram("firecrawl", plan(FIRECRAWL_ONE))).toEqual({ kind: "mapped", programId: "firecrawl.startup-deal", via: "only-match" });
   });
 
   it("doesn't guess between several", () => {
-    const programs = plan([...FIRECRAWL_ONE, { id: "firecrawl.claude-startup-perks", provider: "firecrawl", approval: "approved" }]);
+    const programs = plan([...FIRECRAWL_ONE, { id: "firecrawl.claude-startup-perks", provider: "firecrawl", approved: true }]);
     const mapping = mapProgram("firecrawl", programs);
     expect(mapping.kind).toBe("unmapped");
     expect(mapping.kind === "unmapped" && mapping.message).toContain("2 kept, approved Firecrawl programs (firecrawl.startup-deal, firecrawl.claude-startup-perks)");
@@ -198,14 +206,14 @@ describe("mapping a provider's balance to a plan program", () => {
   it("says so when there is none, including a kept one not approved yet", () => {
     const none = mapProgram("tavily", plan(FIRECRAWL_ONE));
     expect(none.kind === "unmapped" && none.message).toContain("no kept, approved Tavily program");
-    const waiting = mapProgram("firecrawl", plan([{ id: "firecrawl.startup-deal", provider: "firecrawl", approval: "applied" }]));
+    const waiting = mapProgram("firecrawl", plan([{ id: "firecrawl.startup-deal", provider: "firecrawl" }]));
     expect(waiting.kind === "unmapped" && waiting.message).toContain("firecrawl.startup-deal is kept but not approved yet");
   });
 
   it("follows the config override, only to a kept, approved program from that provider", () => {
     const programs = plan([
       ...FIRECRAWL_ONE,
-      { id: "firecrawl.claude-startup-perks", provider: "firecrawl", approval: "approved" },
+      { id: "firecrawl.claude-startup-perks", provider: "firecrawl", approved: true },
       { id: "firecrawl.support", provider: "firecrawl" },
     ]);
     expect(mapProgram("firecrawl", programs, "firecrawl.claude-startup-perks")).toEqual({ kind: "mapped", programId: "firecrawl.claude-startup-perks", via: "config" });
@@ -234,8 +242,8 @@ describe("sync", () => {
 
   it("reports several and none in the sync output and in status, and follows the config override", async () => {
     const kept: KeptProgram[] = [
-      { id: "firecrawl.startup-deal", provider: "firecrawl", approval: "approved" },
-      { id: "firecrawl.claude-startup-perks", provider: "firecrawl", approval: "approved" },
+      { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
+      { id: "firecrawl.claude-startup-perks", provider: "firecrawl", approved: true },
     ];
     const { fake, router } = await connected({ kept }, { FIRECRAWL_API_KEY: "fc-KEYSECRET-1", TAVILY_API_KEY: "tvly-KEYSECRET-2" });
     const results = await router().syncBalances();
@@ -258,8 +266,8 @@ describe("sync", () => {
 
   it("syncs only balances read live from a provider, never credits entered in config", async () => {
     const kept: KeptProgram[] = [
-      { id: "firecrawl.startup-deal", provider: "firecrawl", approval: "approved" },
-      { id: "exa.startup-grant", provider: "exa", approval: "approved" },
+      { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
+      { id: "exa.startup-grant", provider: "exa", approved: true },
     ];
     const { fake, router } = await connected({ kept }, { FIRECRAWL_API_KEY: "fc-KEYSECRET-1", EXA_API_KEY: "exa-KEYSECRET-3" });
     const config: RouterConfig = {
@@ -276,6 +284,36 @@ describe("sync", () => {
     expect(sent[0]).toMatchObject({ programId: "firecrawl.startup-deal", amount: 1000 });
     expect(JSON.stringify(fake.seen)).not.toContain("77777");
     expect(JSON.stringify(fake.seen)).not.toContain("600");
+  });
+
+  it("treats a later reading already on the plan as success with no change", async () => {
+    const later = { amount: 900, unit: "credits", asOf: "2099-01-01T00:00:00.000Z", source: "founder" };
+    const { fake, router } = await connected({ kept: [{ id: "firecrawl.startup-deal", provider: "firecrawl", approved: true, balance: later }] });
+    const results = await router().syncBalances();
+    expect(results[0]).toMatchObject({ provider: "firecrawl", outcome: "synced" });
+    expect(results[0]?.message).toContain("Already current: your plan holds a later reading for firecrawl program firecrawl.startup-deal");
+    expect(reports(fake)).toHaveLength(1);
+  });
+
+  it("shows Programscape's own words when it refuses a balance, and changes nothing", async () => {
+    const { fake, env, fetch } = await connected();
+    fake.behaviour.refuseReport = "The founder’s low-balance reminder for Firecrawl is in usd, and this balance is in credits. Report it in usd; nothing is converted. Nothing was changed.";
+    const out: string[] = [];
+    const code = await main(["sync"], { stdout: (t) => out.push(t), stderr: () => {} }, { env, config: {}, fetch, ledgerPath: false });
+    expect(code).toBe(1);
+    expect(out.join("")).toContain("firecrawl: Programscape refused it: The founder’s low-balance reminder for Firecrawl is in usd");
+  });
+
+  it("doesn't send an amount a plan can't record as reported, and never rounds it", async () => {
+    const fake = fakeProgramscape({ kept: FIRECRAWL_ONE });
+    const providers = mockFetch({ [URLS.firecrawlCredits]: ok({ success: true, data: { remainingCredits: 12.5, planCredits: 500 } }) });
+    const fetch = combine(fake.fetch, providers.fetch);
+    const env = { ...homes(), FIRECRAWL_API_KEY: "fc-KEYSECRET-1" };
+    await connect({ env, fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
+    const results = await createRouter({ env, config: {}, fetch, ledgerPath: false, log: () => {} }).syncBalances();
+    expect(results[0]).toMatchObject({ provider: "firecrawl", outcome: "failed" });
+    expect(results[0]?.message).toContain("not a whole number of credits");
+    expect(fake.toolCalls).toHaveLength(0);
   });
 
   it("refreshes an expired token, storing the rotated refresh token", async () => {

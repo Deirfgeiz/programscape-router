@@ -23,7 +23,10 @@ export interface SeenRequest {
 export interface KeptProgram {
   id: string;
   provider: string;
-  approval?: string;
+  /** The founder marked it approved on their plan. */
+  approved?: boolean;
+  /** The balance already on the plan, if any. */
+  balance?: { amount: number; unit: string; asOf: string; source: string };
 }
 
 export interface FakeOptions {
@@ -53,6 +56,8 @@ export function fakeProgramscape(options: FakeOptions = {}) {
     /** Make the MCP endpoint never answer (until the request is aborted). */
     mcpHangs: false,
     metadataOverrides: {} as Record<string, unknown>,
+    /** Make report_balance refuse with these words (as for a unit that doesn't match the founder's reminder). */
+    refuseReport: undefined as string | undefined,
   };
 
   function issue() {
@@ -79,9 +84,10 @@ export function fakeProgramscape(options: FakeOptions = {}) {
         plan: { id: "11111111-1111-4111-8111-111111111111", role: "owner" },
         kept: behaviour.kept.map((program) => ({
           id: program.id,
-          name: program.id,
+          name: `${program.provider} program ${program.id}`,
           provider: { id: program.provider, name: program.provider },
-          ...(program.approval ? { approval: program.approval } : {}),
+          ...(program.approved ? { approved: true } : {}),
+          ...(program.balance ? { balance: program.balance } : {}),
         })),
         setAside: [],
       };
@@ -90,20 +96,42 @@ export function fakeProgramscape(options: FakeOptions = {}) {
     server.registerTool(
       "report_balance",
       {
-        inputSchema: {
-          programId: z.string(),
-          amount: z.number(),
-          unit: z.enum(["usd", "credits", "requests"]),
-          asOf: z.string(),
-          source: z.literal("router").optional(),
-        },
+        // As founder-ecosystem#532 declares it (lib/agent-api/plan-tools.ts reportBalanceInput).
+        inputSchema: z
+          .object({
+            planId: z.string().optional(),
+            programId: z.string().max(160),
+            amount: z.number(),
+            unit: z.enum(["usd", "credits", "requests"]),
+            asOf: z.iso.datetime({ offset: true }).optional(),
+            source: z.enum(["router", "assistant"]).optional(),
+            lowBalanceAt: z.object({ amount: z.number(), unit: z.enum(["usd", "credits", "requests"]) }).strict().optional(),
+          })
+          .strict().shape,
       },
       async (args) => {
+        const refuse = (text: string) => ({ isError: true, content: [{ type: "text" as const, text }] });
+        if (behaviour.refuseReport) return refuse(behaviour.refuseReport);
+        const asOf = args.asOf ? Date.parse(args.asOf) : Date.now();
+        if (asOf > Date.now() + 5 * 60_000) return refuse("That balance is dated in the future. Send when it was read from the provider, or leave asOf out to mean now. Nothing was changed.");
+        if (args.amount < 0 || (args.unit !== "usd" && !Number.isInteger(args.amount))) return refuse("That balance can’t be recorded: the amount is not valid. Nothing was changed.");
         const program = behaviour.kept.find((entry) => entry.id === args.programId);
-        if (!program || program.approval !== "approved") {
-          return { isError: true, content: [{ type: "text", text: "That program isn't kept and approved on your plan." }] };
-        }
-        const stored = { programId: args.programId, balance: { amount: args.amount, unit: args.unit, asOf: args.asOf, source: "router" } };
+        if (!program) return refuse(`${args.programId} isn’t kept on the founder’s plan. A balance is recorded only for a program they keep. Nothing was changed.`);
+        if (!program.approved) return refuse(`${args.programId} isn’t marked approved on the founder’s plan. A balance is recorded only once the provider has said yes: mark it approved on your plan first, at https://programscape.com/plans. Nothing was changed.`);
+        const balance = { amount: args.amount, unit: args.unit, asOf: new Date(asOf).toISOString(), source: args.source ?? "assistant" };
+        const older = program.balance !== undefined && program.balance.asOf > balance.asOf;
+        if (!older) program.balance = balance;
+        const stored = {
+          saved: true,
+          unchanged: older,
+          planId: "11111111-1111-4111-8111-111111111111",
+          programId: args.programId,
+          name: `${program.provider} program ${program.id}`,
+          ...(older ? { note: "The plan already holds a later reading, so it was kept. The balance below is the one on the plan." } : {}),
+          balance: { ...program.balance, shown: `${program.balance?.amount} ${program.balance?.unit}` },
+          rule: "This is a reported balance with the time it was read, never a total.",
+          open: `https://programscape.com/plans#program=${args.programId}`,
+        };
         return { content: [{ type: "text", text: JSON.stringify(stored) }], structuredContent: stored };
       },
     );
@@ -123,7 +151,7 @@ export function fakeProgramscape(options: FakeOptions = {}) {
       case "/.well-known/oauth-authorization-server":
         return json({
           issuer: ORIGIN,
-          authorization_endpoint: `${ORIGIN}/oauth/authorize`,
+          authorization_endpoint: `${ORIGIN}/connect`,
           token_endpoint: `${ORIGIN}/api/oauth/token`,
           registration_endpoint: `${ORIGIN}/api/oauth/register`,
           revocation_endpoint: `${ORIGIN}/api/oauth/revoke`,
@@ -131,6 +159,7 @@ export function fakeProgramscape(options: FakeOptions = {}) {
           grant_types_supported: ["authorization_code", "refresh_token"],
           code_challenge_methods_supported: ["S256"],
           token_endpoint_auth_methods_supported: ["none"],
+          revocation_endpoint_auth_methods_supported: ["none"],
           scopes_supported: ["plans"],
           ...behaviour.metadataOverrides,
         });

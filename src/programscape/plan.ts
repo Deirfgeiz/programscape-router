@@ -3,8 +3,8 @@
  * balance belongs to. The router never guesses: one match is used, several or none are reported, and the founder
  * settles it in config with `providers.<id>.programscapeProgram`.
  *
- * The shape read here is the expected contract for 0149 Phase C; anything about it that changes is aligned in this
- * file alone.
+ * `my_plan` (founder-ecosystem 0149 Phase C) lists kept programs as `{ id, name, provider: { id, ... }, ... }`, with
+ * `approved: true` only when the founder marked the program approved; the key is absent otherwise.
  */
 import { ADAPTERS } from "../providers/index.js";
 import type { Balance, ProviderId } from "../types.js";
@@ -22,16 +22,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const text = (value: unknown): string | undefined => (typeof value === "string" && value.length > 0 ? value : undefined);
 
-/** Approval as the plan states it. Anything not plainly approved counts as not approved. */
-function isApproved(entry: Record<string, unknown>): boolean {
-  if (entry.approved === true) return true;
-  for (const field of ["approval", "approvalState", "status", "progress"]) {
-    const value = entry[field];
-    if (value === "approved") return true;
-    if (isRecord(value) && (value.state === "approved" || value.status === "approved")) return true;
-  }
-  return false;
-}
 
 function providerIdOf(entry: Record<string, unknown>): string | undefined {
   if (isRecord(entry.provider)) return text(entry.provider.id);
@@ -47,7 +37,7 @@ export function readPlanPrograms(output: unknown): PlanProgram[] {
     if (!id) return [];
     const providerId = providerIdOf(entry);
     const name = text(entry.name);
-    return [{ id, ...(providerId ? { providerId } : {}), ...(name ? { name } : {}), approved: isApproved(entry) }];
+    return [{ id, ...(providerId ? { providerId } : {}), ...(name ? { name } : {}), approved: entry.approved === true }];
   });
 }
 
@@ -99,6 +89,16 @@ export function mapProgram(provider: ProviderId, programs: PlanProgram[], overri
 
 export const SYNC_UNITS = ["usd", "credits", "requests"] as const;
 export type SyncUnit = (typeof SYNC_UNITS)[number];
+
+/**
+ * Why Programscape can't record this amount as it was reported, or undefined when it can: never negative, dollars to
+ * the cent, credits and requests whole. The router reports as-is and never rounds, so such an amount is not sent.
+ */
+export function amountIssue(amount: number, unit: SyncUnit): string | undefined {
+  if (!Number.isFinite(amount) || amount < 0) return "it is below zero";
+  if (unit === "usd") return Math.abs(amount * 100 - Math.round(amount * 100)) < 1e-6 ? undefined : "it has fractions of a cent";
+  return Number.isInteger(amount) ? undefined : `it is not a whole number of ${unit}`;
+}
 
 export interface LiveBalance {
   amount: number;

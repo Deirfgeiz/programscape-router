@@ -178,7 +178,10 @@ credits, Tavily's plan credits), and only for a program you kept on your plan th
 ```
 
 That is the whole message. The amount goes in the unit the provider reported (`usd`, `credits` or `requests`); it is
-never converted, and never added to another balance.
+never converted, rounded or added to another balance. `asOf` is when the router read it from the provider. If your
+plan already holds a later reading, Programscape keeps that one, and `sync` says nothing changed. When Programscape
+refuses a balance (the program isn't kept or approved, or your low-balance reminder is in another unit), `sync`
+shows its reason, and nothing on your plan changes.
 
 ### What is never sent
 

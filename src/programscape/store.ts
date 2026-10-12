@@ -44,8 +44,6 @@ export interface TokenFile {
   /** ISO time the access token stops working. */
   expiresAt?: string;
   connectedAt: string;
-  /** Who Programscape said the tokens belong to, only when it said so. */
-  account?: string;
 }
 
 export interface ClientCache {
@@ -110,7 +108,6 @@ export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile |
   if (!issuer || !clientId || !accessToken || !connectedAt) return undefined;
   const refreshToken = text(raw.refreshToken);
   const expiresAt = text(raw.expiresAt);
-  const account = text(raw.account);
   return {
     version: 1,
     issuer,
@@ -119,7 +116,6 @@ export async function readTokenFile(env: NodeJS.ProcessEnv): Promise<TokenFile |
     connectedAt,
     ...(refreshToken ? { refreshToken } : {}),
     ...(expiresAt ? { expiresAt } : {}),
-    ...(account ? { account } : {}),
   };
 }
 

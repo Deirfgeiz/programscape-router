@@ -71,7 +71,7 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
       ...(noBrowser ? { openBrowser: false as const } : options.openBrowser !== undefined ? { openBrowser: options.openBrowser } : {}),
       ...(options.connectWaitMs !== undefined ? { waitMs: options.connectWaitMs } : {}),
     });
-    io.stdout(`Connected to Programscape${result.account ? ` as ${result.account}` : ""}. Token stored at ${result.tokenPath} (readable only by you).\n`);
+    io.stdout(`Connected to Programscape. Token stored at ${result.tokenPath} (readable only by you).\n`);
     const config = options.config ?? loadConfig(env, options.cwd).config;
     io.stdout(
       config.programscape?.sync === "auto"

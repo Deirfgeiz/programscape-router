@@ -24,8 +24,6 @@ export interface TokenSet {
   refreshToken?: string;
   /** Seconds, as the server said. */
   expiresIn?: number;
-  /** Who the tokens belong to, only when the token response names it. */
-  account?: string;
 }
 
 const base64url = (bytes: Buffer): string => bytes.toString("base64url");
@@ -170,19 +168,11 @@ async function tokenRequest(fetch: GuardedFetch, metadata: ServerMetadata, form:
   }
   const refreshToken = text(body.refresh_token);
   const expiresIn = typeof body.expires_in === "number" && Number.isFinite(body.expires_in) ? body.expires_in : undefined;
-  const account = accountName(body);
   return {
     accessToken,
     ...(refreshToken ? { refreshToken } : {}),
     ...(expiresIn !== undefined ? { expiresIn } : {}),
-    ...(account ? { account } : {}),
   };
-}
-
-/** Who the tokens belong to, only when the server says so. Nothing is inferred. */
-function accountName(body: Record<string, unknown>): string | undefined {
-  const name = text(body.email) ?? (isRecord(body.account) ? text(body.account.email) : text(body.account));
-  return name && name.length <= 320 ? name : undefined;
 }
 
 export function exchangeCode(

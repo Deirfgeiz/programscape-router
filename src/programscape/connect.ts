@@ -53,7 +53,6 @@ export interface ConnectOptions {
 }
 
 export interface ConnectResult {
-  account?: string;
   tokenPath: string;
 }
 
@@ -210,14 +209,13 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
       ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
       ...(tokens.expiresIn !== undefined ? { expiresAt: new Date(at.getTime() + tokens.expiresIn * 1000).toISOString() } : {}),
       connectedAt: at.toISOString(),
-      ...(tokens.account ? { account: tokens.account } : {}),
     });
     const syncState = await readSyncState(env);
     if (syncState.off) {
       delete syncState.off;
       await writeSyncState(env, syncState);
     }
-    return { ...(tokens.account ? { account: tokens.account } : {}), tokenPath: tokenPath(env) };
+    return { tokenPath: tokenPath(env) };
   } finally {
     await callback.close();
   }

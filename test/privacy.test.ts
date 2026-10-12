@@ -133,8 +133,8 @@ describe("privacy", () => {
     const env = { ...KEYS, XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") };
     const fake = fakeProgramscape({
       kept: [
-        { id: "firecrawl.startup-deal", provider: "firecrawl", approval: "approved" },
-        { id: "tavily.startup-credits", provider: "tavily", approval: "approved" },
+        { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
+        { id: "tavily.startup-credits", provider: "tavily", approved: true },
       ],
     });
     const providers = mockFetch({

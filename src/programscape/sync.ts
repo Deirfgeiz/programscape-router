@@ -14,7 +14,7 @@ import { ADAPTERS, type FetchLike } from "../providers/index.js";
 import type { Balance, ProviderId } from "../types.js";
 import { Connection, RECONNECT_MESSAGE } from "./connection.js";
 import { ProgramscapeError, programscapeFetch } from "./guard.js";
-import { type LiveBalance, liveBalance, mapProgram, readPlanPrograms } from "./plan.js";
+import { type LiveBalance, amountIssue, liveBalance, mapProgram, readPlanPrograms } from "./plan.js";
 import { type ProviderSyncRecord, type SyncState, hasTokenFile, readSyncState, writeSyncState } from "./store.js";
 
 export const AUTO_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -79,6 +79,17 @@ export interface BalanceSync {
 
 function hasLiveEndpoint(provider: ProviderId): boolean {
   return ADAPTERS[provider].balance !== undefined;
+}
+
+/** What `report_balance` said it stored. A `note` means the plan already held a later reading: success, no change. */
+function syncedMessage(stored: unknown, balance: LiveBalance, programId: string): string {
+  const output = typeof stored === "object" && stored !== null ? (stored as Record<string, unknown>) : {};
+  const name = typeof output.name === "string" && output.name.length > 0 && output.name !== programId ? `${output.name} (${programId})` : programId;
+  if (typeof output.note === "string") {
+    return `Already current: your plan holds a later reading for ${name} than this one (read ${balance.asOf}), so nothing changed.`;
+  }
+  if (output.unchanged === true) return `Already current: ${balance.amount} ${balance.unit} (read ${balance.asOf}) is what ${name} shows on your plan.`;
+  return `Synced ${balance.amount} ${balance.unit} (read ${balance.asOf}) to ${name}.`;
 }
 
 function skipped(provider: ProviderId): SyncResult {
@@ -149,6 +160,15 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
         });
         continue;
       }
+      const issue = amountIssue(balance.amount, balance.unit);
+      if (issue) {
+        results.push({
+          provider: reading.provider,
+          outcome: "failed",
+          message: `Not synced. ${ADAPTERS[reading.provider].name} reported ${balance.amount} ${balance.unit}, which a plan can't record as it is (${issue}), and the router never rounds it.`,
+        });
+        continue;
+      }
       due.push({ provider: reading.provider, balance });
     }
     if (due.length === 0) return results;
@@ -170,13 +190,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
           source: "router",
         };
         try {
-          await call("report_balance", { ...report });
-          results.push({
-            provider,
-            outcome: "synced",
-            programId: mapping.programId,
-            message: `Synced ${balance.amount} ${balance.unit} (read ${balance.asOf}) to ${mapping.programId}.`,
-          });
+          const stored = await call("report_balance", { ...report });
+          results.push({ provider, outcome: "synced", programId: mapping.programId, message: syncedMessage(stored, balance, mapping.programId) });
         } catch (error) {
           if (error instanceof ProgramscapeError && error.kind === "refused") {
             results.push({ provider, outcome: "refused", programId: mapping.programId, message: `Programscape refused it: ${error.message}` });
