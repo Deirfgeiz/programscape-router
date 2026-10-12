@@ -1,8 +1,13 @@
+import { type CatalogOptions, type ProviderPrograms, defaultCatalogPath, programName, readPrograms, short } from "./catalog.js";
 import { type RouterConfig, loadConfig } from "./config.js";
 import { type KeySource, type ResolvedKeys, keysFromEnv } from "./keys.js";
 import { Ledger, defaultLedgerPath } from "./ledger.js";
+import { claimHeadsUps, defaultNoticesPath } from "./notices.js";
 import { type CapabilityOrder, type ProviderStanding, type SkippedEntry, computeOrder } from "./order.js";
+import type { PlanDates } from "./programscape/store.js";
 import { type BalanceSync, type ProgramscapeSyncStatus, type ProviderReading, type SyncResult, createBalanceSync } from "./programscape/sync.js";
+import { Readings, defaultReadingsPath } from "./readings.js";
+import { DEFAULT_HEADS_UP_DAYS, type HeadsUpReason, type RunwayEstimate, foundersEndDates, headsUpFor, runwaysFor } from "./runway.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter, supports } from "./providers/index.js";
 import {
   type Attempt,
@@ -38,6 +43,16 @@ export interface RouterOptions {
   fetch?: FetchLike;
   /** Path of the counts-only ledger, or false for none. Defaults to the XDG state directory. */
   ledgerPath?: string | false;
+  /** Path of readings.json (live balance readings, for the runway estimate), or false for none. Defaults to the state directory. */
+  readingsPath?: string | false;
+  /**
+   * Path of catalog.json (the cached programs list from Programscape's public catalog), or false to turn the catalog
+   * off. Defaults to the state directory. Config `programscape.catalog: false` and PROGRAMSCAPE_ROUTER_CATALOG=off
+   * turn it off too.
+   */
+  catalogPath?: string | false;
+  /** Path of notices.json (which heads-ups went out today), or false for no heads-up notices. Defaults to the state directory. */
+  noticesPath?: string | false;
   /** Where notices go (never keys, queries or content). Defaults to stderr. */
   log?: (message: string) => void;
   /** The clock used for end dates and the ledger day. Defaults to the system clock. */
@@ -64,6 +79,8 @@ export interface ProviderStatus {
   balances: Balance[];
   /** Why no live balance is shown, when none is. */
   balanceNote?: string;
+  /** How long each live balance lasts at the recent pace: an estimate, worked out locally from readings.json. */
+  runway?: RunwayEstimate[];
   /** The official API documentation its adapter was built from. */
   docs: string[];
 }
@@ -79,6 +96,24 @@ export interface RouterStatus {
   order: Record<Capability, CapabilityOrder>;
   /** The opt-in balance sync to the founder's Programscape plan, from local files only (no network call). */
   programscape: ProgramscapeSyncStatus;
+  /** Providers whose estimated runway, or an end date the founder gave, is under the heads-up threshold. */
+  headsUp: HeadsUp[];
+  /** The heads-up threshold in days (config headsUp.days; 30 by default). */
+  headsUpDays: number;
+  /**
+   * The programs that can add more, per provider with a key set, from Programscape's public catalog (short version:
+   * the full list, with other providers that do the same job, is on each `page`). Absent when the catalog is off or
+   * couldn't be read.
+   */
+  programs?: ProviderPrograms[];
+}
+
+/** A heads-up for one provider: why, and what can add more. */
+export interface HeadsUp extends HeadsUpReason {
+  /** Its programs from the catalog, when the catalog is on and could be read. */
+  programs?: ProviderPrograms;
+  /** The heads-up in words, for a founder or an agent to pass on. */
+  words: string;
 }
 
 /** A router made by createRouter. */
@@ -94,7 +129,12 @@ export interface Router {
    * { programId, amount, unit, asOf, source: "router" } is sent, for balances read from a provider's own endpoint.
    */
   syncBalances(): Promise<SyncResult[]>;
-  /** Resolves when pending ledger writes and background syncs have finished. */
+  /**
+   * The heads-ups not yet given today (once per provider per UTC day), as one notice an agent can pass on, or
+   * undefined. Remembers them in notices.json. The MCP server adds it to search and scrape results as `notice`.
+   */
+  headsUpNotice(): Promise<string | undefined>;
+  /** Resolves when pending ledger and readings writes and background syncs have finished. */
   flush(): Promise<void>;
   /** The config file in use, or null when none was found (or a config object was passed). */
   readonly configPath: string | null;
@@ -135,6 +175,18 @@ interface BalanceCache {
   note?: string;
 }
 
+/** A heads-up in words: why, then what can add more and where to see it all (when the catalog could be read). */
+export function headsUpWords(reason: HeadsUpReason, programs: ProviderPrograms | undefined): string {
+  const lead = `Heads-up: ${reason.reasons.join("; ")}.`;
+  if (!programs) return lead;
+  const name = programs.provider.name;
+  const list =
+    programs.more.length > 0
+      ? `Programs that can add more, from Programscape's public catalog (${name} decides who qualifies): ${programs.more.map(programName).join("; ")}.`
+      : `Programscape's catalog has no ${name} startup program today.`;
+  return `${lead} ${list} More, and other providers that do the same job: ${programs.page}`;
+}
+
 /** Creates a router. Reads keys from the environment and the config file unless options say otherwise. Throws ConfigError on an invalid config. */
 export function createRouter(options: RouterOptions = {}): Router {
   const env = options.env ?? process.env;
@@ -146,6 +198,17 @@ export function createRouter(options: RouterOptions = {}): Router {
   const configPath = located.path ?? null;
   const ledgerPath = options.ledgerPath === false ? null : (options.ledgerPath ?? defaultLedgerPath(env));
   const ledger = ledgerPath ? new Ledger(ledgerPath, log) : undefined;
+  const readingsPath = options.readingsPath === false ? null : (options.readingsPath ?? defaultReadingsPath(env));
+  const readings = readingsPath ? new Readings(readingsPath, log) : undefined;
+  const noticesPath = options.noticesPath === false ? null : (options.noticesPath ?? defaultNoticesPath(env));
+  const catalog: CatalogOptions = {
+    env,
+    config,
+    fetch: fetchImpl,
+    now,
+    path: options.catalogPath === false ? false : (options.catalogPath ?? defaultCatalogPath(env)),
+  };
+  const headsUpDays = config.headsUp?.days ?? DEFAULT_HEADS_UP_DAYS;
   // Off until `connect`; with `programscape.sync: "auto"`, runs in the background after a balance read.
   const balanceSync: BalanceSync = createBalanceSync({ env, config, fetch: fetchImpl, now, log });
 
@@ -213,8 +276,10 @@ export function createRouter(options: RouterOptions = {}): Router {
         const reading = await adapter.balance!(context(id, BALANCE_TIMEOUT_MS));
         const entry = { at: now().getTime(), balances: reading.balances };
         balanceCache.set(id, entry);
+        // Queued like the ledger: a readings problem never breaks a call.
+        void readings?.record(id, reading.balances, now());
         // Fire and forget: never awaited, so a search or scrape never waits on Programscape.
-        if (autoSync) void balanceSync.afterBalanceRead(id, reading.balances);
+        if (autoSync) void balanceSync.afterBalanceRead(id, reading.balances, () => runwayFor(id, reading.balances));
         return entry;
       } catch (error) {
         if (error instanceof ProviderCallError && error.outcome === "unauthorized") disable(id, error.status);
@@ -242,12 +307,39 @@ export function createRouter(options: RouterOptions = {}): Router {
     }));
   }
 
+  /**
+   * The founder's own expiration date and award from their Programscape plan, when connected. A date in config wins:
+   * when config gives this provider any end date, the plan's is left out.
+   */
+  function planBalances(adapter: ProviderAdapter, dates: PlanDates | undefined): Balance[] {
+    if (!dates?.expiresOn) return [];
+    if ((config.providers?.[adapter.id]?.credits ?? []).some((credit) => credit.expiresOn !== undefined)) return [];
+    return [
+      {
+        label: `${dates.name ?? dates.programId} (on your Programscape plan)`,
+        kind: "credits",
+        ...(dates.award ? { unit: dates.award.unit, total: dates.award.amount } : {}),
+        endsOn: dates.expiresOn,
+        source: "plan",
+      },
+    ];
+  }
+
+  async function runwayFor(id: ProviderId, balances: readonly Balance[]): Promise<RunwayEstimate[]> {
+    if (!readings) return [];
+    const file = await readings.read(now());
+    return runwaysFor(ADAPTERS[id].name, id, balances, file.readings);
+  }
+
   async function standings(refresh: boolean): Promise<Map<ProviderId, ProviderStanding & { balanceNote?: string }>> {
-    const readings = await Promise.all(PROVIDER_IDS.map((id) => readBalance(id, refresh)));
+    const [liveReads, planDates] = await Promise.all([
+      Promise.all(PROVIDER_IDS.map((id) => readBalance(id, refresh))),
+      balanceSync.planDates().catch(() => ({}) as Partial<Record<ProviderId, PlanDates>>),
+    ]);
     const result = new Map<ProviderId, ProviderStanding & { balanceNote?: string }>();
     PROVIDER_IDS.forEach((id, index) => {
       const adapter = ADAPTERS[id];
-      const reading = readings[index] as BalanceCache;
+      const reading = liveReads[index] as BalanceCache;
       const paid = config.providers?.[id]?.paid;
       const disabledReason = disabled.get(id);
       const exhaustedState = exhausted.get(id);
@@ -258,10 +350,24 @@ export function createRouter(options: RouterOptions = {}): Router {
         ...(disabledReason ? { disabled: disabledReason } : {}),
         ...(exhaustedState ? { exhausted: exhaustedState } : {}),
         ...(paid !== undefined ? { paid } : {}),
-        balances: [...configBalances(adapter), ...reading.balances],
+        balances: [...configBalances(adapter), ...planBalances(adapter, planDates[id]), ...reading.balances],
         ...(reading.note ? { balanceNote: reading.note } : {}),
       });
     });
+    return result;
+  }
+
+  /** Each usable provider's runway estimates and heads-up reason, from its standing and the local readings. */
+  async function lookAhead(all: Map<ProviderId, ProviderStanding>): Promise<Map<ProviderId, { runway: RunwayEstimate[]; headsUp?: HeadsUpReason }>> {
+    const file = readings ? await readings.read(now()) : undefined;
+    const result = new Map<ProviderId, { runway: RunwayEstimate[]; headsUp?: HeadsUpReason }>();
+    for (const id of PROVIDER_IDS) {
+      const standing = all.get(id) as ProviderStanding;
+      if (!standing.enabled || standing.disabled) continue;
+      const runway = file ? runwaysFor(ADAPTERS[id].name, id, standing.balances, file.readings) : [];
+      const headsUp = headsUpFor(id, runway, foundersEndDates(standing.balances), headsUpDays, now());
+      result.set(id, { runway, ...(headsUp ? { headsUp } : {}) });
+    }
     return result;
   }
 
@@ -361,9 +467,17 @@ export function createRouter(options: RouterOptions = {}): Router {
 
     async status(statusOptions = {}) {
       const all = await standings(statusOptions.refresh ?? false);
+      const [ahead, catalogEntries] = await Promise.all([lookAhead(all), readPrograms(catalog, [...keys.keys()])]);
+      const programs = catalogEntries?.providers.map(short);
+      const headsUp: HeadsUp[] = [...ahead.values()].flatMap(({ headsUp: reason }) => {
+        if (!reason) return [];
+        const entry = programs?.find((candidate) => candidate.provider.id === reason.provider);
+        return [{ ...reason, ...(entry ? { programs: entry } : {}), words: headsUpWords(reason, entry) }];
+      });
       const providers: ProviderStatus[] = PROVIDER_IDS.map((id) => {
         const adapter = ADAPTERS[id];
         const standing = all.get(id) as ProviderStanding & { balanceNote?: string };
+        const runway = ahead.get(id)?.runway ?? [];
         return {
           id,
           name: adapter.name,
@@ -380,6 +494,7 @@ export function createRouter(options: RouterOptions = {}): Router {
             : standing.enabled && !adapter.balance
               ? { balanceNote: `${adapter.name} publishes no balance endpoint; only credits from your config are shown.` }
               : {}),
+          ...(runway.length > 0 ? { runway } : {}),
           docs: adapter.docs,
         };
       });
@@ -391,7 +506,24 @@ export function createRouter(options: RouterOptions = {}): Router {
         ...(resolvedKeys.keychainNote ? { keychainNote: resolvedKeys.keychainNote } : {}),
         order: { search: orderFor("search", all), scrape: orderFor("scrape", all) },
         programscape: await balanceSync.status(),
+        headsUp,
+        headsUpDays,
+        ...(programs ? { programs } : {}),
       };
+    },
+
+    async headsUpNotice() {
+      if (!noticesPath) return undefined;
+      const ahead = await lookAhead(await standings(false));
+      const reasons = [...ahead.values()].flatMap(({ headsUp }) => (headsUp ? [headsUp] : []));
+      if (reasons.length === 0) return undefined;
+      const due = await claimHeadsUps(noticesPath, reasons.map((reason) => reason.provider), now());
+      if (due.length === 0) return undefined;
+      const entries = (await readPrograms(catalog, [...keys.keys()]))?.providers;
+      return reasons
+        .filter((reason) => due.includes(reason.provider))
+        .map((reason) => headsUpWords(reason, entries?.map(short).find((entry) => entry.provider.id === reason.provider)))
+        .join("\n");
     },
 
     async syncBalances() {
@@ -400,14 +532,20 @@ export function createRouter(options: RouterOptions = {}): Router {
         enabled.map(async (id) => {
           // Only what the provider reported live; credits from config are never part of a reading.
           const reading = await readBalance(id, true, false);
-          return { provider: id, balances: reading.balances, ...(reading.note ? { note: reading.note } : {}) };
+          const runway = await runwayFor(id, reading.balances);
+          return {
+            provider: id,
+            balances: reading.balances,
+            ...(reading.note ? { note: reading.note } : {}),
+            ...(runway.length > 0 ? { runway } : {}),
+          };
         }),
       );
       return balanceSync.sync(readings);
     },
 
     async flush() {
-      await Promise.all([ledger?.flush(), balanceSync.flush()]);
+      await Promise.all([ledger?.flush(), readings?.flush(), balanceSync.flush()]);
     },
   };
 }

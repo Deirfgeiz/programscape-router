@@ -10,15 +10,30 @@ function ok(value: unknown): ToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
 }
 
-function fail(error: unknown): ToolResult {
+function fail(error: unknown, notice?: string): ToolResult {
   if (error instanceof RouterError) {
     return {
       isError: true,
-      content: [{ type: "text", text: JSON.stringify({ error: error.code, message: error.message, routing: error.routing }, null, 2) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: error.code, message: error.message, routing: error.routing, ...(notice ? { notice } : {}) }, null, 2),
+        },
+      ],
     };
   }
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "internal", message: "Unexpected error" }) }] };
 }
+
+/** Today's heads-ups, if any are due. A problem working them out never fails the call. */
+async function notice(router: Router): Promise<{ notice?: string }> {
+  const words = await router.headsUpNotice().catch(() => undefined);
+  return words ? { notice: words } : {};
+}
+
+const NOTICE =
+  "The result may also carry `notice`: a heads-up, at most once a day per provider, when a provider's credits are estimated to run out within the founder's threshold (30 days by default) " +
+  "or an end date they gave is near, with programs from Programscape's public catalog that can add more and a link. Pass it on to the founder as it is: the estimate is labelled as one, and the provider decides who qualifies.";
 
 /** An MCP server with the search, scrape and credits_status tools, backed by `router`. Not yet connected. */
 export function createMcpServer(router: Router): McpServer {
@@ -32,7 +47,8 @@ export function createMcpServer(router: Router): McpServer {
         "Search the web through one of the founder's own search providers (Exa, Firecrawl, Keenable, Linkup, Parallel, Tavily or You.com, whichever keys are set). " +
         "Returns JSON: `results` as a list of { title, url, snippet?, publishedAt? }, and `routing` { provider, reason, rule, tried[] } saying which provider served it, " +
         "why it was chosen (the founder's order, or by default the credits that end first), and every provider tried with its outcome. " +
-        "If a provider's credits are spent, rate limited or down, the next provider is tried automatically.",
+        "If a provider's credits are spent, rate limited or down, the next provider is tried automatically. " +
+        NOTICE,
       inputSchema: {
         query: z.string().min(1).describe("What to search for."),
         maxResults: z.number().int().min(1).max(100).optional().describe("Upper bound on results (default 10). Each provider's own maximum still applies."),
@@ -41,9 +57,10 @@ export function createMcpServer(router: Router): McpServer {
     },
     async ({ query, maxResults }) => {
       try {
-        return ok(await router.search({ query, ...(maxResults !== undefined ? { maxResults } : {}) }));
+        const response = await router.search({ query, ...(maxResults !== undefined ? { maxResults } : {}) });
+        return ok({ ...response, ...(await notice(router)) });
       } catch (error) {
-        return fail(error);
+        return fail(error, (await notice(router)).notice);
       }
     },
   );
@@ -55,7 +72,8 @@ export function createMcpServer(router: Router): McpServer {
       description:
         "Fetch one web page as markdown through one of the founder's own scrape providers (Exa contents, Firecrawl scrape, Keenable fetch, Linkup fetch, Parallel extract, Tavily extract or You.com contents, whichever keys are set). " +
         "Returns JSON: `result` { url, title?, markdown } and `routing` { provider, reason, rule, tried[] } saying which provider served it and why. " +
-        "Fails over to the next provider when one is out of credits, rate limited, down, or cannot fetch the page.",
+        "Fails over to the next provider when one is out of credits, rate limited, down, or cannot fetch the page. " +
+        NOTICE,
       inputSchema: {
         url: z.string().url().describe("Absolute http(s) URL of the page."),
       },
@@ -63,9 +81,10 @@ export function createMcpServer(router: Router): McpServer {
     },
     async ({ url }) => {
       try {
-        return ok(await router.scrape({ url }));
+        const response = await router.scrape({ url });
+        return ok({ ...response, ...(await notice(router)) });
       } catch (error) {
-        return fail(error);
+        return fail(error, (await notice(router)).notice);
       }
     },
   );
@@ -78,6 +97,9 @@ export function createMcpServer(router: Router): McpServer {
         "Show which providers are enabled (by which API keys are set), the order each capability (search, scrape) will try them in with the reason for each position, " +
         "every balance on its own with its unit and when it was read (`asOf`), any provider marked spent or disabled this session, " +
         "and whether the founder's opt-in balance sync to their Programscape plan is on (`programscape`). " +
+        "Where the router has readings over at least a day, each provider's `runway` says how long a balance lasts at the recent pace (always labelled as an estimate); " +
+        "`headsUp` lists providers under the founder's threshold (`headsUpDays`), and `programs` lists programs from Programscape's public catalog that can add more, with a link for each provider. " +
+        "Never say the founder qualifies: each provider decides. " +
         "Balances are listed one by one in their own units and are never combined into a total. Nothing is ranked on quality.",
       inputSchema: {
         refresh: z.boolean().optional().describe("Re-read balances from providers that publish them, instead of using the cached reading."),

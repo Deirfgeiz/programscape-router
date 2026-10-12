@@ -38,9 +38,24 @@ const programscapeSettings = z
     sync: z.enum(["manual", "auto"], {
       error: () => 'Use "manual" (only when you run `programscape-router sync`) or "auto".',
     }),
+    /** false: never read Programscape's public catalog, and say nothing about programs (0151). */
+    catalog: z.boolean({ error: () => "Use true or false." }),
   })
   .partial()
-  .describe("Opt-in balance sync to the founder's Programscape plan. Nothing is sent until `programscape-router connect`.");
+  .describe(
+    "Opt-in balance sync to the founder's Programscape plan (nothing is sent until `programscape-router connect`), and the public programs catalog (on unless catalog is false).",
+  );
+
+const headsUpSettings = z
+  .strictObject({
+    days: z
+      .number({ error: () => "Use a whole number of days, such as 30 (0 turns the heads-up off)." })
+      .int("Use a whole number of days, such as 30 (0 turns the heads-up off).")
+      .min(0)
+      .max(3650),
+  })
+  .partial()
+  .describe("The heads-up when estimated runway, or an end date you gave, is under this many days (default 30).");
 
 const orderList = z
   .array(providerId)
@@ -55,6 +70,7 @@ export const configSchema = z.strictObject({
     .optional(),
   providers: z.partialRecord(providerId, providerSettings).optional(),
   programscape: programscapeSettings.optional(),
+  headsUp: headsUpSettings.optional(),
   timeoutMs: z.number().int().min(1000).max(300_000).optional(),
 });
 

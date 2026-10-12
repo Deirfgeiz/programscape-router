@@ -18,13 +18,23 @@ credits, including programs from these providers.
   be carried to another host.
 - Keys are never logged, never printed (`keys list`, `status` and `check` say only where a key came from), and never
   written to a file by the router. The OS keychain holds a key you store with `keys set`.
-- The router's own files (an optional config and a counts-only ledger) stay in your user folders. If you connect to
+- The router's own files (an optional config, a counts-only ledger, balance readings, a cached programs list and a
+  note of which heads-ups it gave; see [Local files](#local-files)) stay in your user folders. If you connect to
   Programscape, its sign-in tokens go in your OS keychain too; only without a keychain do they go in a file (mode
   600 on macOS and Linux; on Windows, protected only by your profile folder's default permissions).
-- The router has no telemetry. It makes no call to Programscape unless you run `connect`. After that, it signs in,
-  reads which programs you kept on your plan, and sends balance numbers; never your keys, queries, URLs, page
-  content or call counts (see [What goes to Programscape](#what-goes-to-programscape-and-what-comes-back)).
-- Your queries, URLs and page content are never logged or saved. The local ledger keeps counts only.
+- The router has no telemetry. Without `connect`, its only call to Programscape is a read of Programscape's public
+  catalog of programs that can add more credits: a `GET https://programscape.com/api/router/programs?providers=...`
+  that sends only the ids of the providers you have a key set for (such as `firecrawl,tavily`) and a
+  `programscape-router/<version>` User-Agent. Never a key, query, URL, balance, token or anything that identifies you,
+  and no cookie. It reads at most once a day (and again the same day only when you add a key for a provider that
+  day's read didn't ask about), and keeps the answer in `catalog.json`. Turn it off with
+  `"programscape": { "catalog": false }` in config or `PROGRAMSCAPE_ROUTER_CATALOG=off`: then the router makes no call
+  to Programscape unless you run `connect` (see [Programs that can add more](#programs-that-can-add-more)).
+- After `connect`, it also signs in, reads your plan, and sends balance numbers with a runway estimate; never your
+  keys, queries, URLs, page content or call counts (see
+  [What goes to Programscape](#what-goes-to-programscape-and-what-comes-back)).
+- Your queries, URLs and page content are never logged or saved. The local ledger keeps counts only, and the
+  readings file keeps balance numbers only.
 
 ## Providers
 
@@ -192,7 +202,8 @@ put `op run --env-file=... --` in front of each command.
 ```bash
 npx @programscape/router keys set tavily   # once per provider: store the key in your OS keychain
 npx @programscape/router check             # one live search, scrape and balance read per key, each provider on its own
-npx @programscape/router status            # enabled providers, the order and why, balances
+npx @programscape/router status            # enabled providers, the order and why, balances, runway, heads-ups
+npx @programscape/router programs          # programs that can add more, for the providers you have keys for
 npx @programscape/router search "seed round SAFE templates"
 npx @programscape/router scrape https://example.com
 ```
@@ -228,17 +239,22 @@ FAIL: 3 of 7 calls passed, 4 failed; 2 providers skipped (no key).
 
 `check --json` prints the same report as JSON. Both are safe to share: they hold where each key came from (never a
 key), outcome classes, HTTP statuses, error codes the provider documents (such as Exa `FEATURE_DISABLED` or Firecrawl
-`insufficient_credits`), our own hints, latencies, and counts and lengths. They never hold a key, a result title,
-URL or snippet, page content, a balance amount, or anything else a provider wrote, since an error message can echo
-account details back. The only URL in them is the fixed test page, `https://example.com`.
+`insufficient_credits`), our own hints, latencies, counts and lengths, the runway in our own words with its whole
+number of days, and the public programs list. They never hold a key, a result title, URL or snippet, page content, a
+balance amount, or anything else a provider wrote, since an error message can echo account details back. The only
+URLs in them are the fixed test page, `https://example.com`, and the programs list's public links.
 
 `check --verbose` adds each provider's own error message, with your keys replaced by `[redacted]`. It may still
 contain account details (an amount, an email, a URL), so the report starts and ends with a warning: read it
 yourself, but don't share it.
 
-`check` writes nothing to the ledger, sends nothing to Programscape, and doesn't read your config file. It exits 0
-when every call it made passed, and 1 otherwise (or when no key is set). A check costs each provider one search, one
-scrape and, where there is one, one balance read.
+`check` writes nothing to the ledger. A balance it reads goes in `readings.json`, like any live balance read, and when
+the readings allow, each provider gets a `runway` line: *About 3 weeks left on Firecrawl at your recent pace
+(estimate)*. It ends with the short list of [programs that can add more](#programs-that-can-add-more), from
+Programscape's public catalog (the only call it makes to Programscape, with only the provider ids). It reads your
+config only for `programscape.catalog`; if the config can't be read, it leaves the catalog off and checks anyway. It
+exits 0 when every call it made passed, and 1 otherwise (or when no key is set). A check costs each provider one
+search, one scrape and, where there is one, one balance read.
 
 `status --json` prints the status as JSON. `status --refresh` re-reads balances.
 
@@ -367,7 +383,11 @@ The server offers three tools:
 - **`search`**: `{ query, maxResults? }` returns `results` (`title`, `url`, `snippet?`, `publishedAt?`) and `routing`.
 - **`scrape`**: `{ url }` returns `result` (`url`, `title?`, `markdown`) and `routing`.
 - **`credits_status`**: the enabled providers, the order for each capability with the reason for each position,
-  every balance with its unit and when it was read, and any provider marked spent or switched off.
+  every balance with its unit and when it was read, any provider marked spent or switched off, each provider's
+  `runway` estimate, the `headsUp` list, and the `programs` that can add more.
+
+`search` and `scrape` results may also carry a `notice`: the [heads-up](#runway-and-the-heads-up), at most once a day
+per provider, for the agent to pass on to you.
 
 Every result says which provider served it and why:
 
@@ -388,7 +408,9 @@ Every result says which provider served it and why:
 ### Default: credits ending first
 
 1. Providers whose credits have an end date come first, the soonest first. A monthly allowance ends when its
-   billing period ends (Firecrawl reports this). Credits you enter in config can carry `expiresOn`.
+   billing period ends (Firecrawl reports this). Credits you enter in config can carry `expiresOn`. When you
+   [connect](#sync-balances-to-your-programscape-plan-optional), the expiration date you entered on your plan for an
+   approved program counts too, unless config gives that provider a date (config wins).
 2. Then providers whose credits have no known end date. A provider you've told the router nothing about goes here.
 3. Pay-as-you-go comes last: a provider whose known credits are all spent or ended, or one you mark `"paid": true` with no credits left that the router knows of. Credits you still hold are always spent before paid usage.
 
@@ -407,6 +429,63 @@ Set an order per capability in config. Only the providers you list are used, in 
 ```json
 { "order": { "search": ["tavily", "exa"], "scrape": ["firecrawl"] } }
 ```
+
+## Runway and the heads-up
+
+Each time the router reads a live balance (Firecrawl, Linkup, Tavily and You.com publish one), it keeps the numbers in
+[`readings.json`](#local-files). From those readings it works out, on your machine, how long each balance lasts at your
+recent pace:
+
+- Only the readings since the balance last rose count: a top-up or a monthly reset starts a new window.
+- It needs at least two readings at least 24 hours apart. Until then, there is no estimate.
+- The pace is what was used across the window, divided by the days it spans; the days left are what remains divided
+  by the pace, rounded down. There is no estimate when nothing was used.
+- Under 14 days it says *About N days*, under 60 *About N weeks*, beyond that *About N months*. When the provider
+  reports the end of its billing period (Firecrawl does) and the balance lasts past it, it says *Lasts past this period*
+  instead.
+
+It is always labelled as an estimate: *About 3 weeks left on Firecrawl at your recent pace (estimate)*. It is plain
+arithmetic on your own readings, never an end date, and never a promise. `status`, `check` and `credits_status` show
+it.
+
+**The heads-up.** When an estimate is under 30 days, or an end date you gave (in config, or on your Programscape plan)
+is within 30 days, the router gives a heads-up for that provider, with the short list of
+[programs that can add more](#programs-that-can-add-more) and the link to the full list. Applications take days or
+weeks, so it comes early. `status` and `credits_status` show it every time; `search` and `scrape` results carry it as
+a `notice` at most once a day per provider (UTC), which the router remembers in `notices.json`. Set your own number
+with `{ "headsUp": { "days": 14 } }`; `0` turns the heads-up off. A provider's monthly billing period is not one of
+those dates: a monthly allowance comes back.
+
+## Programs that can add more
+
+[Programscape](https://programscape.com) keeps a source-backed catalog of startup programs. The router shows, for each
+provider you have a key for, the programs that can add more credits, so you can apply before they run out:
+
+- after your first `keys set`, once;
+- in `check` and `status` (and `credits_status`);
+- in the heads-up;
+- in full with `programscape-router programs` (`--json` for the catalog's JSON), including other providers that do
+  the same job.
+
+The short version names each program, with *Ask {Provider}* where the provider decides on request, and links to
+`https://programscape.com/extend/<provider>`, the full list: more from the same provider, other providers that do the
+same job (alphabetical, never ranked), and, where published, who can help. Every program there has its official
+source and the date Programscape checked it. Whether you qualify is each provider's decision; the router never says
+you do, and never ranks.
+
+To show it, the router reads Programscape's public catalog on its own:
+
+- **What is sent:** `GET https://programscape.com/api/router/programs?providers=firecrawl,tavily`, naming only the
+  providers you have a key set for, with a `programscape-router/<version>` User-Agent. No key, query, URL, balance,
+  token or identifier, and no cookie. Like every call to Programscape, it goes only to `https://programscape.com`,
+  never follows a redirect, and gives up after 3 seconds. Like any web request, it reaches programscape.com from your
+  IP address, which the site's hosting provider logs for a limited time; the catalog endpoint itself doesn't read or store it.
+- **How often:** at most once a day, and again the same day only when you add a key for a provider that day's read
+  didn't ask about. A failed read counts, so an unreachable catalog costs one short attempt a day. The answer is kept
+  in [`catalog.json`](#local-files); after a failed read, the last list is shown for up to a week.
+- **When it fails:** silently. The router says nothing about programs and works exactly as before.
+- **How to turn it off:** `{ "programscape": { "catalog": false } }` in config, or `PROGRAMSCAPE_ROUTER_CATALOG=off`.
+  Then there is no read, and nothing about programs anywhere.
 
 ## Config
 
@@ -441,6 +520,8 @@ Config is optional. The router looks in this order:
 | `providers.<id>.paid: false` | You don't pay with this provider; once its known credits are spent, it is skipped. |
 | `timeoutMs` | Per-call timeout (default 30 s for search, 60 s for scrape). |
 | `programscape.sync` | `"manual"` (the default: only when you run `programscape-router sync`) or `"auto"`. Does nothing until you run `connect`. |
+| `programscape.catalog` | `false` turns off the read of Programscape's public catalog, and every mention of programs (see [Programs that can add more](#programs-that-can-add-more)). On by default. |
+| `headsUp.days` | The [heads-up](#runway-and-the-heads-up) threshold, in days (default 30). `0` turns the heads-up off. |
 | `providers.<id>.programscapeProgram` | The program on your Programscape plan that this provider's live balance belongs to, when your plan has several from that provider (or the router can't tell). |
 
 Keys never go in the config file. The router rejects unknown fields with a message that says which one.
@@ -472,16 +553,28 @@ logged. Redirects are never followed, as with provider calls.
 **Reading your plan** (each `sync`). The router opens an MCP session (which tells Programscape the client's name,
 `programscape-router`, and its version) and calls `my_plan` with no arguments. Programscape answers with your plan:
 the router uses only the programs you kept, with their ids, providers and whether each shows as approved, to decide
-which program a provider's balance belongs to. It keeps nothing from the answer but the program id it chose, in the
-local sync record.
+which program a provider's balance belongs to. For an approved program, it also reads the expiration date and award
+you entered on your plan (your own, never worked out by Programscape), and orders that provider by the date under
+[credits ending first](#default-credits-ending-first), unless your config gives that provider a date (config wins).
+This is how Exa, Keenable and Parallel, which publish no balance, get a real end date without a config file. It keeps
+nothing from the answer but the program id it chose and, per provider, that program's id, name, date and award, in the
+local sync record. The plan is read on every sync, manual or automatic, so run `programscape-router sync` once after
+you mark a program approved or change its date. `disconnect` deletes the record, and the dates with it.
 
 **Each balance report.** For each provider whose balance the router reads live from the provider's own endpoint
 (Firecrawl's remaining credits, Linkup's and You.com's dollar balances, Tavily's plan credits), and only for a
-program you kept on your plan that shows as approved, it calls `report_balance` with exactly these five fields:
+program you kept on your plan that shows as approved, it calls `report_balance` with exactly these five fields, and
+a sixth, `estimate`, when the router has a [runway estimate](#runway-and-the-heads-up) for that balance:
 
 ```json
-{ "programId": "firecrawl.startup-deal", "amount": 1000, "unit": "credits", "asOf": "2026-10-11T12:00:00.000Z", "source": "router" }
+{ "programId": "firecrawl.startup-deal", "amount": 1000, "unit": "credits", "asOf": "2026-10-11T12:00:00.000Z", "source": "router", "estimate": { "daysLeft": 21 } }
 ```
+
+`daysLeft` is the whole number of days the router worked out from its own readings. Your plan shows it as *about 3
+weeks left at your recent pace (estimate)*, with when it was worked out; it never becomes an expiration date and never
+sets a date reminder. No estimate is sent when there isn't one yet, when the balance lasts past the provider's billing
+period, or when it is over 3650 days. If your plan doesn't take an estimate yet, the router sends the balance again
+without it.
 
 The amount goes in the unit the provider reported (`usd`, `credits` or `requests`); it is never rounded or added to
 another balance, and the only conversion is You.com's cents into dollars. Programscape records dollars to the cent,
@@ -497,7 +590,8 @@ changes.
 - Your provider keys. They still go only to their own provider.
 - Credits you entered in config (Exa, Keenable, Parallel, or anything under `providers.<id>.credits`). Those are
   your own numbers, not a provider's reading; your plan has whatever you entered on programscape.com.
-- Call counts from the local ledger, your config file, or anything else.
+- Call counts from the local ledger, the readings themselves (only the one worked-out number of days goes), your config
+  file, or anything else.
 
 ### Connect and disconnect
 
@@ -607,16 +701,36 @@ search or scrape, and if it fails it says so once on stderr and your calls carry
 | 401 or 403 (bad, disabled or revoked key), or Linkup's 402 (it asks for payment only when no key arrived) | Switches the provider off for the session, says so on stderr, and tries the next |
 | 400 or 422 (the request itself was wrong) | Returns the error to you without trying anyone else |
 
-## The local ledger
+## Local files
 
-`~/.local/state/programscape-router/ledger.json` on macOS and Linux, `%LOCALAPPDATA%\programscape-router\ledger.json`
-on Windows (or `$XDG_STATE_HOME/programscape-router/ledger.json` when that is set) counts
-calls per UTC day, provider and capability, and how each ended. It stores nothing else: no queries, URLs, content,
-keys or balances.
+The router keeps these in its state folder: `~/.local/state/programscape-router/` on macOS and Linux,
+`%LOCALAPPDATA%\programscape-router\` on Windows, or `$XDG_STATE_HOME/programscape-router/` when that is set. Each
+is written atomically and only your user account can read it (mode 600 on macOS and Linux).
+
+**`ledger.json`** counts calls per UTC day, provider and capability, and how each ended. It stores nothing else: no
+queries, URLs, content, keys or balances.
 
 ```json
 { "days": { "2026-10-11": { "tavily": { "search": { "ok": 12, "rate_limited": 1 } } } } }
 ```
+
+**`readings.json`** keeps each live balance reading, for the [runway estimate](#runway-and-the-heads-up): the provider,
+the balance's label and unit, the remaining amount, the total if the provider gave one, and when it was read. Nothing
+else. Only balances a provider reported live are kept, never credits from config. Readings older than 90 days are
+dropped; readings taken less than an hour apart are thinned to the latest (a rise is always kept), and each provider
+keeps at most 500.
+
+```json
+{ "readings": [{ "provider": "firecrawl", "label": "Firecrawl credits, current billing period", "unit": "credits", "remaining": 4200, "total": 5000, "asOf": "2026-10-11T12:00:00.000Z" }] }
+```
+
+**`catalog.json`** keeps the last answer from Programscape's public catalog, which providers it asked about, and when
+(see [Programs that can add more](#programs-that-can-add-more)).
+
+**`notices.json`** keeps, per provider, the UTC day its last heads-up went out in a tool result, and when the programs
+were first shown after `keys set`. Nothing else.
+
+Delete any of them at any time; the router starts it again.
 
 ## Troubleshooting
 
@@ -646,9 +760,12 @@ result or page content (see [Quick check](#quick-check)). Don't paste `check --v
 
 ## What it never does
 
-- No telemetry, and no call to Programscape unless you run `connect`; then only sign-in, a read of your plan, and
-  balance numbers.
-- No quality ranking, and no LLM deciding anything. The order is a rule you can read.
+- No telemetry. Without `connect`, the only call to Programscape is the public catalog read, with only the ids of the
+  providers you have keys for, at most once a day, and off when you say so. After `connect`, also sign-in, a read of
+  your plan, and balance numbers with a runway estimate.
+- No quality ranking, and no LLM deciding anything. The order is a rule you can read, and the runway is arithmetic on
+  your own readings, labelled as an estimate.
+- It never says you qualify for a program. The provider decides.
 - No combined credit total. Each balance is shown on its own, in its own unit.
 - It doesn't create accounts, keep your keys anywhere but your environment or your OS keychain, or proxy through a
   server.
@@ -667,7 +784,9 @@ const synced = await router.syncBalances(); // after `programscape-router connec
 
 `createRouter()` reads keys from the environment only. To use keys stored with `keys set` too, resolve them first:
 `createRouter({ keys: await resolveKeys() })`. `createRouter` also takes `env`, `config`, `cwd`, `fetch`,
-`ledgerPath` (or `false`), `log` and `now`, mostly for testing. `runCheck()` and `formatCheck()` are the `check` command as functions. Everything the package exports is
+`ledgerPath`, `readingsPath`, `catalogPath` and `noticesPath` (each a path, or `false` for none; `catalogPath: false`
+turns the catalog off), `log` and `now`, mostly for testing. `router.status()` reads the public catalog by the same
+rules as the CLI. `router.headsUpNotice()` returns the heads-ups not yet given today, as the MCP server's `notice`. `runCheck()` and `formatCheck()` are the `check` command as functions. Everything the package exports is
 listed in [CHANGELOG.md](CHANGELOG.md); anything else is internal.
 
 ## Development

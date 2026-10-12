@@ -363,7 +363,8 @@ describe("sync", () => {
     const results = await createRouter({ env, config: {}, fetch, ledgerPath: false, log: () => {} }).syncBalances();
     expect(results[0]).toMatchObject({ provider: "firecrawl", outcome: "failed" });
     expect(results[0]?.message).toContain("not a whole number of credits");
-    expect(fake.toolCalls).toHaveLength(0);
+    // The plan is still read (for its dates), but no balance goes.
+    expect(fake.toolCalls.map((call) => call.name)).toEqual(["my_plan"]);
   });
 
   it("refreshes an expired token, storing the rotated refresh token", async () => {

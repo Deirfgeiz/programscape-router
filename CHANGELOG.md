@@ -4,6 +4,61 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
+## 1.2.0 (unreleased)
+
+Programscape decision 0151, "extend before they end": warn while there's time, and show what can add more. The site
+side (the catalog endpoint, `my_plan` dates and the estimate on the plan) is founder-ecosystem#541; until it is live,
+the catalog read fails quietly and the router works as before.
+
+### Added
+
+- **Balance readings.** Every live balance read (Firecrawl, Linkup, Tavily, You.com) is kept in `readings.json` beside
+  the ledger: provider, balance label, unit, remaining, total if known, and when it was read. Nothing else. 90 days are
+  kept; readings less than an hour apart are thinned to the latest (a rise is always kept); at most 500 per provider.
+  The ledger stays counts-only.
+- **Runway estimate.** From the readings since a balance last rose (a top-up or reset starts a new window), with at
+  least two readings 24 hours apart: pace = what was used / days, days left = remaining / pace, rounded down. Shown as
+  *About N days* (under 14), *About N weeks* (under 60) or *About N months*, always labelled: "About 3 weeks left on
+  Firecrawl at your recent pace (estimate)". When the provider reports its billing period end and the balance lasts
+  past it, it says *Lasts past this period* instead. In `status` (`providers[].runway`), `credits_status` and `check`
+  (`providers[].runway`, our own words and whole days only).
+- **Heads-up.** When an estimate is under the threshold, or an end date the founder gave (config or plan) is within it,
+  `status` and `credits_status` list it under `headsUp`, with the short programs list and the `/extend/<provider>` link.
+  `search` and `scrape` MCP results carry it as `notice`, at most once per provider per UTC day (remembered in
+  `notices.json`). Threshold: config `headsUp.days` (default 30; `0` turns it off). `router.headsUpNotice()` returns the
+  same notice.
+- **Programs that can add more.** The router reads Programscape's public catalog (`GET
+  https://programscape.com/api/router/programs?providers=<ids>`) with only the ids of providers with a key set and a
+  `programscape-router/<version>` User-Agent: no key, query, URL, balance, token or identifier. At most once a day
+  (again the same day only for a newly keyed provider), cached in `catalog.json`, 3-second timeout, through the same
+  programscape.com-only, no-redirect guard as the sync. Any failure is silent. Off with
+  `"programscape": { "catalog": false }` or `PROGRAMSCAPE_ROUTER_CATALOG=off`. The short version (program names, *Ask
+  {Provider}* where it applies, and the link) shows after the first `keys set` ever, in `check`, in `status` and in the
+  heads-up. The catalog's order is kept; nothing is ranked, and nothing says the founder qualifies.
+- `programscape-router programs [--json]`: the full list for the providers with a key, including other providers that
+  do the same job, each program with its official source and checked date.
+- **Two-way sync.** Each sync now reads `my_plan` even when no balance is due, and keeps, per provider, the founder's
+  own `expiresOn` and `award` for the approved program it maps to. Under credits ending first, the plan's date orders
+  that provider (a `"plan"` balance in `status`), unless config gives the provider a date, which wins. This gives Exa,
+  Keenable and Parallel real end dates without a config file. `disconnect` deletes them with the sync record.
+- `report_balance` carries `estimate: { daysLeft }` with a balance when the router has an estimate for it (not when it
+  lasts past the period or exceeds 3650 days). A plan that refuses the estimate gets the balance again without it.
+- Config: `headsUp.days`, `programscape.catalog`. `createRouter` options: `readingsPath`, `catalogPath`, `noticesPath`
+  (each a path or `false`). `runCheck` options: `config`, `readingsPath`, `catalogPath`.
+- Types: `HeadsUp`, `RunwayEstimate`, `CatalogProgram`, `CatalogProvider`, `ProviderPrograms`. `RouterStatus` gains
+  `headsUp`, `headsUpDays` and `programs`; `ProviderStatus` gains `runway`; `CheckReport` gains `programs` and
+  `CheckProvider` gains `runway`.
+
+### Changed
+
+- The privacy promise: without `connect`, the router's one call to Programscape is the catalog read above (it used to
+  make none). The README says exactly what it sends, how often, and how to turn it off.
+- `check` now reads the config, only for `programscape.catalog` (a config it can't read leaves the catalog off and the
+  check runs anyway), keeps the balances it reads in `readings.json`, and may call the catalog. It still writes
+  nothing to the ledger.
+- `Balance.source` may be `"plan"`. Code that switches exhaustively over it needs the new case.
+- `sync` messages say when the plan's date now orders a provider, or that the config date wins.
+
 ## 1.1.0 (unreleased)
 
 Two new providers, each built from its official API docs (read October 12, 2026; linked at the top of each adapter).

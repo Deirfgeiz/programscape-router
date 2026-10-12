@@ -116,7 +116,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     expect(ledger).toEqual(sanitizeLedger(ledger));
   });
 
-  it("sends each key only to its own provider's host and makes no other network call", async () => {
+  it("sends each key only to its own provider's host, and with the catalog off makes no other network call", async () => {
     const { fetch, calls } = mockFetch({
       [URLS.exaSearch]: status(503),
       [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
@@ -130,7 +130,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
       [URLS.youcomBalance]: ok(fixture("youcom-balance")),
       [URLS.youcomSearch]: status(503),
     });
-    const router = createRouter({ ...(await keyed()), config: {}, fetch, ledgerPath: false, log: () => {} });
+    const router = createRouter({ ...(await keyed({ PROGRAMSCAPE_ROUTER_CATALOG: "off" })), config: {}, fetch, ledgerPath: false, log: () => {} });
     await router.search({ query: QUERY }).catch(() => undefined);
     await router.status({ refresh: true });
 
@@ -147,6 +147,38 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
         else expect(sent).not.toContain(key);
       }
     }
+  });
+
+  it("reads Programscape's public catalog with only the provider ids: no key, query, URL or balance", async () => {
+    const root = mkdtempSync(join(tmpdir(), "psr-privacy-catalog-"));
+    const { fetch, calls } = mockFetch({
+      [URLS.exaSearch]: status(503),
+      [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
+      [URLS.firecrawlSearch]: status(503),
+      [URLS.keenableSearch]: status(503),
+      [URLS.linkupBalance]: ok(fixture("linkup-balance")),
+      [URLS.linkupSearch]: status(503),
+      [URLS.parallelSearch]: status(503),
+      [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      [URLS.tavilySearch]: ok(fixture("tavily-search")),
+      [URLS.youcomBalance]: ok(fixture("youcom-balance")),
+      [URLS.youcomSearch]: status(503),
+      [`${ORIGIN}/api/router/programs`]: ok(fixture("programscape-programs")),
+    });
+    const router = createRouter({ ...(await keyed({ XDG_STATE_HOME: join(root, "state") })), config: {}, fetch, ledgerPath: false, log: () => {} });
+    await router.search({ query: QUERY });
+    await router.status({ refresh: true });
+    const toProgramscape = calls.filter((call) => new URL(call.url).origin === ORIGIN);
+    expect(toProgramscape).toHaveLength(1);
+    const [call] = toProgramscape;
+    expect(call?.url).toBe(`${ORIGIN}/api/router/programs?providers=exa,firecrawl,keenable,linkup,parallel,tavily,youcom`);
+    expect(call?.body).toBeUndefined();
+    expect(Object.keys(call?.headers ?? {}).sort()).toEqual(["accept", "user-agent"]);
+    const sent = JSON.stringify(call);
+    for (const key of Object.values(KEYS)) expect(sent).not.toContain(key);
+    expect(sent).not.toContain("SECRET");
+    expect(sent).not.toContain("zebra");
+    expect(sent).not.toContain("1000"); // Firecrawl's balance
   });
 
   it("drops anything that is not a count when it reads an existing ledger", () => {

@@ -1,13 +1,15 @@
+import { catalogEnabled, formatPrograms, readPrograms, short, shortLines } from "./catalog.js";
 import { formatCheck, runCheck } from "./check.js";
 import { type KeysOptions, runKeys } from "./cli-keys.js";
-import { ConfigError, loadConfig } from "./config.js";
+import { ConfigError, type RouterConfig, loadConfig } from "./config.js";
 import { formatStatus } from "./format.js";
-import { type KeyringLoader, resolveKeys } from "./keys.js";
+import { type KeyringLoader, type ResolvedKeys, resolveKeys } from "./keys.js";
+import { defaultNoticesPath, introduced, markIntroduced } from "./notices.js";
 import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
-import { ProgramscapeError } from "./programscape/guard.js";
+import { PROGRAMSCAPE_ORIGIN, ProgramscapeError } from "./programscape/guard.js";
 import { runMcpServer } from "./mcp.js";
 import { type Router, RouterError, type RouterOptions, createRouter } from "./router.js";
-import type { Routing } from "./types.js";
+import { PROVIDER_IDS, type ProviderId, type Routing } from "./types.js";
 import { VERSION } from "./version.js";
 
 export interface CliIo {
@@ -39,6 +41,7 @@ Usage:
   programscape-router keys list [--json]         Which keys are set and where from (never the keys)
   programscape-router keys remove <provider>     Delete a stored key from the OS keychain
   programscape-router status [--json] [--refresh]
+  programscape-router programs [--json]          Programs that can add more for the providers you have keys for
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
   programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan (disconnect first to reconnect)
@@ -51,7 +54,9 @@ TAVILY_API_KEY and YDC_API_KEY, or, when a variable isn't set, from the OS keych
 A variable wins over the keychain.
 Providers: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.
 Find startup credits for these tools at https://programscape.com
-Nothing goes to Programscape unless you run connect; then only sign-in, a read of your plan, and balance numbers.
+Without connect, the only call to Programscape is a read of its public catalog (which providers have a key set, at
+most once a day; "programscape": { "catalog": false } in config or PROGRAMSCAPE_ROUTER_CATALOG=off turns it off).
+After connect: sign-in, a read of your plan, and balance numbers with a runway estimate.
 `;
 
 function formatRouting(routing: Routing): string {
@@ -115,6 +120,70 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
 
 const KEYED_COMMANDS = new Set(["mcp", "status", "search", "scrape", "sync"]);
 
+/** The config, or undefined when it can't be read: the catalog then stays off, since an opt-out can't be ruled out. */
+function configOrUndefined(env: NodeJS.ProcessEnv, options: CliOptions): RouterConfig | undefined {
+  try {
+    return options.config ?? loadConfig(env, options.cwd).config;
+  } catch (error) {
+    if (error instanceof ConfigError) return undefined;
+    throw error;
+  }
+}
+
+const keyed = (keys: ResolvedKeys): ProviderId[] => PROVIDER_IDS.filter((id) => (keys.keys[id]?.trim() ?? "").length > 0);
+
+/** After the first `keys set` that stores a key: the programs that can add more, once ever (0151 ruling 1). */
+async function introducePrograms(io: CliIo, options: CliOptions, env: NodeJS.ProcessEnv, keys: () => Promise<ResolvedKeys>): Promise<void> {
+  try {
+    const path = defaultNoticesPath(env);
+    if (await introduced(path)) return;
+    const config = configOrUndefined(env, options);
+    if (!config || !catalogEnabled(env, config)) return;
+    const now = options.now ?? (() => new Date());
+    const catalog = await readPrograms(
+      { env, config, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)), now },
+      keyed(await keys()),
+    );
+    if (!catalog) return;
+    io.stdout(`\n${shortLines(catalog.providers.map(short)).join("\n")}\n`);
+    await markIntroduced(path, now());
+  } catch {
+    // Saying nothing is always fine here.
+  }
+}
+
+async function runPrograms(args: string[], io: CliIo, options: CliOptions, env: NodeJS.ProcessEnv, keys: () => Promise<ResolvedKeys>): Promise<number> {
+  const json = takeFlag(args, "--json");
+  let config: RouterConfig;
+  try {
+    config = options.config ?? loadConfig(env, options.cwd).config;
+  } catch (error) {
+    if (error instanceof ConfigError) {
+      io.stderr(`${error.message}\n`);
+      return 2;
+    }
+    throw error;
+  }
+  const say = (code: number, note: string, providers: unknown[] = []) => {
+    io.stdout(json ? `${JSON.stringify({ providers, note }, null, 2)}\n` : `${note}\n`);
+    return code;
+  };
+  if (!catalogEnabled(env, config)) {
+    return say(0, 'The programs list is off ("programscape": { "catalog": false } in config, or PROGRAMSCAPE_ROUTER_CATALOG=off), so the router reads nothing from Programscape. Browse https://programscape.com instead.');
+  }
+  const ids = keyed(await keys());
+  if (ids.length === 0) {
+    return say(1, "No provider key is set, so there is nothing to look up. Set one with `programscape-router keys set <provider>`, or browse https://programscape.com.");
+  }
+  const catalog = await readPrograms({ env, config, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)), now: options.now ?? (() => new Date()) }, ids);
+  if (!catalog) {
+    const links = ids.map((id) => `  ${id}: ${PROGRAMSCAPE_ORIGIN}/extend/${id}`).join("\n");
+    return say(1, `Couldn't read Programscape's public catalog just now (the router tries at most once a day). Each provider's page:\n${links}`);
+  }
+  io.stdout(json ? `${JSON.stringify(catalog, null, 2)}\n` : `${formatPrograms(catalog.providers, catalog.asOf || undefined)}\n`);
+  return 0;
+}
+
 /** Runs one CLI command. Returns the exit code; "mcp" resolves once the server is connected. */
 export async function main(argv: string[], io: CliIo, options: CliOptions = {}): Promise<number> {
   const args = [...argv];
@@ -136,26 +205,37 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
     ...(options.platform ? { platform: options.platform } : {}),
   };
 
+  const keys = () => (options.keys ? Promise.resolve(options.keys) : resolveKeys(keychainOptions));
+
   if (command === "keys") {
-    return runKeys(args, io, {
+    const code = await runKeys(args, io, {
       env,
       ...(options.stdin ? { stdin: options.stdin } : {}),
       ...(options.promptOutput ? { promptOutput: options.promptOutput } : {}),
       ...(options.keyringLoader ? { keyringLoader: options.keyringLoader } : {}),
       ...(options.platform ? { platform: options.platform } : {}),
     });
+    if (code === 0 && args[0] === "set") await introducePrograms(io, options, env, keys);
+    return code;
   }
 
+  if (command === "programs") return runPrograms(args, io, options, env, keys);
+
   if (command === "check") {
-    // Calls each adapter directly: no config, no routing, no ledger, no Programscape.
+    // Calls each adapter directly: no routing, no ledger. The config is read only for the catalog switch, and a config
+    // that can't be read leaves the catalog off rather than stopping the check.
     const json = takeFlag(args, "--json");
     const verbose = takeFlag(args, "--verbose");
+    const config = configOrUndefined(env, options);
     const report = await runCheck({
       env,
       verbose,
-      keys: options.keys ?? (await resolveKeys(keychainOptions)),
+      keys: await keys(),
+      ...(config ? { config } : { catalogPath: false as const }),
       ...(options.fetch ? { fetch: options.fetch } : {}),
       ...(options.now ? { now: options.now } : {}),
+      ...(options.readingsPath !== undefined ? { readingsPath: options.readingsPath } : {}),
+      ...(options.catalogPath !== undefined && config ? { catalogPath: options.catalogPath } : {}),
     });
     io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : `${formatCheck(report)}\n`);
     return report.ok ? 0 : 1;
@@ -213,8 +293,7 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
       return 2;
     }
     // Keys are read once, at startup: each environment variable, or the OS keychain where one isn't set.
-    const keys = options.keys ?? (await resolveKeys(keychainOptions));
-    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions, keys });
+    router = createRouter({ log: (message) => io.stderr(`programscape-router: ${message}\n`), ...routerOptions, keys: await keys() });
   } catch (error) {
     if (error instanceof ConfigError) {
       io.stderr(`${error.message}\n`);
