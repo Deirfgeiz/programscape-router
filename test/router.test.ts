@@ -11,7 +11,12 @@ const KEENABLE_RESULTS = fixture("keenable-search");
 
 function setup(
   routes: Record<string, Responder | Responder[]>,
-  keys: Partial<Record<"EXA_API_KEY" | "FIRECRAWL_API_KEY" | "KEENABLE_API_KEY" | "PARALLEL_API_KEY" | "TAVILY_API_KEY", string>>,
+  keys: Partial<
+    Record<
+      "EXA_API_KEY" | "FIRECRAWL_API_KEY" | "KEENABLE_API_KEY" | "LINKUP_API_KEY" | "PARALLEL_API_KEY" | "TAVILY_API_KEY" | "YDC_API_KEY",
+      string
+    >
+  >,
   config: RouterConfig = {},
   extra: Partial<RouterOptions> = {},
 ) {
@@ -123,7 +128,9 @@ describe("failover", () => {
       expect.objectContaining({ provider: "exa", reason: expect.stringContaining("Skipped for the rest of this session.") }),
       expect.objectContaining({ provider: "firecrawl" }),
       expect.objectContaining({ provider: "keenable" }),
+      expect.objectContaining({ provider: "linkup" }),
       expect.objectContaining({ provider: "parallel" }),
+      expect.objectContaining({ provider: "youcom" }),
     ]);
   });
 
@@ -259,6 +266,89 @@ describe("failover", () => {
     expect(response.routing.tried.map((t) => t.outcome)).toEqual(["fetch_failed", "ok"]);
   });
 
+  it("fails over when Linkup cannot fetch the page (a FETCH_* 400), rather than stopping as on a bad request", async () => {
+    const { router } = setup(
+      {
+        [URLS.linkupFetch]: status(400, { statusCode: 400, error: { code: "FETCH_TARGET_UNREACHABLE", message: "Unreachable", details: [] } }),
+        [URLS.linkupBalance]: status(500),
+        [URLS.tavilyExtract]: ok(fixture("tavily-extract")),
+        ...tavilyUsageUnknown,
+      },
+      { LINKUP_API_KEY: "lk", TAVILY_API_KEY: "tvly" },
+    );
+    const response = await router.scrape({ url: "https://example.com/article" });
+    expect(response.routing.provider).toBe("tavily");
+    expect(response.routing.tried).toEqual([
+      { provider: "linkup", outcome: "fetch_failed", status: 400, message: "Unreachable" },
+      { provider: "tavily", outcome: "ok" },
+    ]);
+  });
+
+  it("marks Linkup spent on its out-of-credit 429, but only rate limited on TOO_MANY_REQUESTS", async () => {
+    const busy = setup(
+      {
+        [URLS.linkupSearch]: status(429, { statusCode: 429, error: { code: "TOO_MANY_REQUESTS", message: "Too many requests", details: [] } }),
+        [URLS.linkupBalance]: status(500),
+        [URLS.tavilySearch]: ok(TAVILY_RESULTS),
+        ...tavilyUsageUnknown,
+      },
+      { LINKUP_API_KEY: "lk", TAVILY_API_KEY: "tvly" },
+    );
+    expect((await busy.router.search({ query: "q" })).routing.tried[0]).toMatchObject({ provider: "linkup", outcome: "rate_limited", status: 429 });
+    expect((await busy.router.status()).providers.find((p) => p.id === "linkup")?.exhausted).toBeUndefined();
+
+    const spent = setup(
+      {
+        [URLS.linkupSearch]: status(429, fixture("linkup-error-429")),
+        [URLS.linkupBalance]: status(500),
+        [URLS.tavilySearch]: ok(TAVILY_RESULTS),
+        ...tavilyUsageUnknown,
+      },
+      { LINKUP_API_KEY: "lk", TAVILY_API_KEY: "tvly" },
+    );
+    expect((await spent.router.search({ query: "q" })).routing.tried[0]).toMatchObject({ provider: "linkup", outcome: "exhausted", status: 429 });
+    expect(spent.logs).toEqual(["Linkup reported its credits spent; skipping it for the rest of this session."]);
+    await spent.router.search({ query: "again" });
+    expect(spent.calls.filter((call) => call.url === URLS.linkupSearch)).toHaveLength(1);
+  });
+
+  it("serves an empty list when Linkup finds nothing, without trying anyone else", async () => {
+    const { router, calls } = setup(
+      {
+        [URLS.linkupSearch]: status(400, { statusCode: 400, error: { code: "SEARCH_QUERY_NO_RESULT", message: "Search query yields no result", details: [] } }),
+        [URLS.linkupBalance]: status(500),
+        ...tavilyUsageUnknown,
+      },
+      { LINKUP_API_KEY: "lk", TAVILY_API_KEY: "tvly" },
+    );
+    const response = await router.search({ query: "q" });
+    expect(response).toMatchObject({ results: [], routing: { provider: "linkup", tried: [{ provider: "linkup", outcome: "ok" }] } });
+    expect(calls.some((call) => call.url === URLS.tavilySearch)).toBe(false);
+  });
+
+  it("on a You.com 403 for a missing scope fails over for that call but keeps You.com on for search", async () => {
+    const { router, logs } = setup(
+      {
+        [URLS.youcomContents]: status(403, { detail: "Missing required scopes" }),
+        [URLS.youcomSearch]: ok(fixture("youcom-search")),
+        [URLS.youcomBalance]: status(403, { detail: "Missing required scopes" }),
+        [URLS.tavilyExtract]: ok(fixture("tavily-extract")),
+        ...tavilyUsageUnknown,
+      },
+      { YDC_API_KEY: "ydc", TAVILY_API_KEY: "tvly" },
+      { order: { search: ["youcom"], scrape: ["youcom", "tavily"] } },
+    );
+    const scrape = await router.scrape({ url: "https://example.com/article" });
+    expect(scrape.routing.provider).toBe("tavily");
+    expect(scrape.routing.tried[0]).toMatchObject({ provider: "youcom", outcome: "provider_error", status: 403 });
+    expect((await router.search({ query: "q" })).routing.provider).toBe("youcom");
+    expect(logs).toEqual([]);
+    const youcom = (await router.status()).providers.find((p) => p.id === "youcom");
+    expect(youcom?.disabled).toBeUndefined();
+    // A balance read the key has no scope for is unknown, not a refused key.
+    expect(youcom?.balanceNote).toContain("Could not read the balance (provider_error)");
+  });
+
   it("reports every attempt when all providers fail", async () => {
     const { router } = setup(
       { [URLS.exaSearch]: status(503), [URLS.tavilySearch]: status(429), ...tavilyUsageUnknown },
@@ -303,8 +393,10 @@ describe("status", () => {
       ["exa", true],
       ["firecrawl", true],
       ["keenable", false],
+      ["linkup", false],
       ["parallel", false],
       ["tavily", true],
+      ["youcom", false],
     ]);
     const firecrawl = status.providers.find((p) => p.id === "firecrawl");
     expect(firecrawl?.balances[0]?.asOf).toMatch(/^\d{4}-\d{2}-\d{2}T/);

@@ -29,7 +29,7 @@ export function createMcpServer(router: Router): McpServer {
     {
       title: "Web search",
       description:
-        "Search the web through one of the founder's own search providers (Exa, Firecrawl, Keenable, Parallel or Tavily, whichever keys are set). " +
+        "Search the web through one of the founder's own search providers (Exa, Firecrawl, Keenable, Linkup, Parallel, Tavily or You.com, whichever keys are set). " +
         "Returns JSON: `results` as a list of { title, url, snippet?, publishedAt? }, and `routing` { provider, reason, rule, tried[] } saying which provider served it, " +
         "why it was chosen (the founder's order, or by default the credits that end first), and every provider tried with its outcome. " +
         "If a provider's credits are spent, rate limited or down, the next provider is tried automatically.",
@@ -53,7 +53,7 @@ export function createMcpServer(router: Router): McpServer {
     {
       title: "Scrape a page",
       description:
-        "Fetch one web page as markdown through one of the founder's own scrape providers (Exa contents, Firecrawl scrape, Keenable fetch, Parallel extract or Tavily extract, whichever keys are set). " +
+        "Fetch one web page as markdown through one of the founder's own scrape providers (Exa contents, Firecrawl scrape, Keenable fetch, Linkup fetch, Parallel extract, Tavily extract or You.com contents, whichever keys are set). " +
         "Returns JSON: `result` { url, title?, markdown } and `routing` { provider, reason, rule, tried[] } saying which provider served it and why. " +
         "Fails over to the next provider when one is out of credits, rate limited, down, or cannot fetch the page.",
       inputSchema: {

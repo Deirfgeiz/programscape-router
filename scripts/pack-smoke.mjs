@@ -75,7 +75,8 @@ for (const name of ["computeOrder", "configSchema", "createBalanceSync", "connec
 }
 const router = api.createRouter({ env: {}, config: {}, ledgerPath: false, log: () => {} });
 const status = await router.status();
-if (status.providers.length !== 5) throw new Error("expected five providers");
+const ids = status.providers.map((provider) => provider.id).join(",");
+if (ids !== "exa,firecrawl,keenable,linkup,parallel,tavily,youcom") throw new Error("expected the seven providers, alphabetically: " + ids);
 const report = await api.runCheck({ env: {} });
 if (report.attempted !== 0 || report.ok) throw new Error("check with no keys should attempt nothing and not pass");
 let blocked = false;

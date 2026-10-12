@@ -84,7 +84,15 @@ describe("resolveKeys", () => {
     fakeKeyring.put(KEYCHAIN_SERVICE, "EXA_API_KEY", "exa-from-keychain");
     const resolved = await resolveKeys({ env: { EXA_API_KEY: "exa-from-env" } });
     expect(resolved.keys).toEqual({ exa: "exa-from-env", tavily: "tvly-from-keychain" });
-    expect(resolved.sources).toEqual({ exa: "env", firecrawl: "none", keenable: "none", parallel: "none", tavily: "keychain" });
+    expect(resolved.sources).toEqual({
+      exa: "env",
+      firecrawl: "none",
+      keenable: "none",
+      linkup: "none",
+      parallel: "none",
+      tavily: "keychain",
+      youcom: "none",
+    });
     expect(resolved.keychainNote).toBeUndefined();
     // Never the kernel keyring, which forgets keys at logout.
     expect(fakeKeyring.entryOptions.every((options) => JSON.stringify(options) === '{"linux":{"store":"secret-service"}}')).toBe(true);
@@ -170,6 +178,23 @@ describe("keys set", () => {
     expect(all()).not.toContain(SECRET);
   });
 
+  it("stores Linkup and You.com keys under their own variable names, which resolveKeys then reads", async () => {
+    for (const [provider, name, account] of [
+      ["linkup", "Linkup", "LINKUP_API_KEY"],
+      ["youcom", "You.com", "YDC_API_KEY"],
+    ] as const) {
+      const { streams, out, all } = io();
+      const stdin = Readable.from([`${SECRET}-${provider}\n`]) as never;
+      expect(await main(["keys", "set", provider, "--stdin"], streams, { env: {}, stdin, platform: "darwin" })).toBe(0);
+      expect(fakeKeyring.peek(KEYCHAIN_SERVICE, account)).toBe(`${SECRET}-${provider}`);
+      expect(out.join("")).toContain(`Saved the ${name} key in the macOS Keychain (service programscape-router, account ${account}).`);
+      expect(all()).not.toContain(SECRET);
+    }
+    const resolved = await resolveKeys({ env: {} });
+    expect(resolved.keys).toEqual({ linkup: `${SECRET}-linkup`, youcom: `${SECRET}-youcom` });
+    expect(resolved.sources).toMatchObject({ linkup: "keychain", youcom: "keychain" });
+  });
+
   it("says when it replaces a stored key", async () => {
     fakeKeyring.put(KEYCHAIN_SERVICE, "EXA_API_KEY", "exa-old");
     const { streams, out, all } = io();
@@ -204,7 +229,7 @@ describe("keys set", () => {
 
     const unknown = io();
     expect(await main(["keys", "set", "google", "--stdin"], unknown.streams, { env: {}, stdin: Readable.from(["x\n"]) as never })).toBe(2);
-    expect(unknown.err.join("")).toContain('"google" is not a provider this router knows. Use one of: exa, firecrawl, keenable, parallel, tavily.');
+    expect(unknown.err.join("")).toContain('"google" is not a provider this router knows. Use one of: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.');
     expect(fakeKeyring.store.size).toBe(0);
   });
 
@@ -323,7 +348,7 @@ describe("key sources in status and check", () => {
     expect(check.out.join("")).toContain("tavily (TAVILY_API_KEY, from the environment)");
     const checkJson = io();
     await main(["check", "--json"], checkJson.streams, { env, fetch });
-    expect(JSON.parse(checkJson.out.join("")).providers.map((p: { keySource: string }) => p.keySource)).toEqual(["keychain", "none", "none", "none", "env"]);
+    expect(JSON.parse(checkJson.out.join("")).providers.map((p: { keySource: string }) => p.keySource)).toEqual(["keychain", "none", "none", "none", "none", "env", "none"]);
 
     for (const shown of [status.all(), text.all(), check.all(), checkJson.all()]) expect(shown).not.toContain("SECRET");
   });

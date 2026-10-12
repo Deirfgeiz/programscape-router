@@ -1,0 +1,8 @@
+{
+  "statusCode": 429,
+  "error": {
+    "code": "INSUFFICIENT_FUNDS_CREDITS",
+    "message": "You do not have enough credits to perform this request.",
+    "details": []
+  }
+}

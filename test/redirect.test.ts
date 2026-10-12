@@ -60,11 +60,17 @@ describe("redirects never carry a key to another host", () => {
       [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
       [URLS.keenableSearch]: ok(fixture("keenable-search")),
       [URLS.keenableFetch]: ok(fixture("keenable-fetch")),
+      [URLS.linkupSearch]: ok(fixture("linkup-search")),
+      [URLS.linkupFetch]: ok(fixture("linkup-fetch")),
+      [URLS.linkupBalance]: ok(fixture("linkup-balance")),
       [URLS.parallelSearch]: ok(fixture("parallel-search")),
       [URLS.parallelExtract]: ok(fixture("parallel-extract")),
       [URLS.tavilySearch]: ok(fixture("tavily-search")),
       [URLS.tavilyExtract]: ok(fixture("tavily-extract")),
       [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      [URLS.youcomSearch]: ok(fixture("youcom-search")),
+      [URLS.youcomContents]: ok(fixture("youcom-contents")),
+      [URLS.youcomBalance]: ok(fixture("youcom-balance")),
     });
     const ctx = { key: KEY, fetch, timeoutMs: 5000 };
     for (const adapter of Object.values(ADAPTERS)) {
@@ -72,7 +78,7 @@ describe("redirects never carry a key to another host", () => {
       await adapter.scrape!({ url: "https://example.com/" }, ctx);
       await adapter.balance?.(ctx);
     }
-    expect(calls).toHaveLength(12);
+    expect(calls).toHaveLength(18);
     for (const call of calls) expect(call.redirect).toBe("manual");
   });
 

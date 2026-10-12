@@ -10,10 +10,21 @@ const KEYS = {
   EXA_API_KEY: "exa-CHECKSECRET-1111",
   FIRECRAWL_API_KEY: "fc-CHECKSECRET-2222",
   KEENABLE_API_KEY: "keen_CHECKSECRET-3333",
+  LINKUP_API_KEY: "lk-CHECKSECRET-6666",
   PARALLEL_API_KEY: "par-CHECKSECRET-4444",
   TAVILY_API_KEY: "tvly-CHECKSECRET-5555",
+  YDC_API_KEY: "ydc-CHECKSECRET-7777",
 };
-const PROVIDER_HOSTS = new Set(["api.exa.ai", "api.firecrawl.dev", "api.keenable.ai", "api.parallel.ai", "api.tavily.com"]);
+const PROVIDER_HOSTS = new Set([
+  "api.exa.ai",
+  "api.firecrawl.dev",
+  "api.keenable.ai",
+  "api.linkup.so",
+  "api.parallel.ai",
+  "api.tavily.com",
+  "ydc-index.io",
+  "api.you.com",
+]);
 
 /** Every piece of content a provider hands back carries "zebra", so a leak anywhere is easy to find. */
 const TITLE = "Result title zebra-title";
@@ -32,11 +43,17 @@ const success: Record<string, Responder> = {
   [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
   [URLS.keenableSearch]: ok({ results: [{ url: RESULT_URL, title: TITLE, snippet: SNIPPET }, { url: `${RESULT_URL}/2`, title: TITLE }] }),
   [URLS.keenableFetch]: ok({ url: CHECK_URL, title: TITLE, content: PAGE }),
+  [URLS.linkupSearch]: ok({ results: [{ type: "text", name: TITLE, url: RESULT_URL, content: SNIPPET, favicon: "" }] }),
+  [URLS.linkupFetch]: ok({ markdown: PAGE, favicon: "https://favicons.linkup.so?domain=example.com" }),
+  [URLS.linkupBalance]: ok(fixture("linkup-balance")),
   [URLS.parallelSearch]: ok({ search_id: "s", session_id: "x", results: [{ url: RESULT_URL, title: TITLE, excerpts: [SNIPPET] }] }),
   [URLS.parallelExtract]: ok({ extract_id: "e", session_id: "x", errors: [], results: [{ url: CHECK_URL, title: TITLE, excerpts: [], full_content: PAGE }] }),
   [URLS.tavilySearch]: ok({ results: [{ url: RESULT_URL, title: TITLE, content: SNIPPET }, { url: `${RESULT_URL}/2`, title: TITLE, content: SNIPPET }] }),
   [URLS.tavilyExtract]: ok({ results: [{ url: CHECK_URL, title: TITLE, raw_content: PAGE }], failed_results: [] }),
   [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+  [URLS.youcomSearch]: ok({ results: { web: [{ url: RESULT_URL, title: TITLE, snippets: [SNIPPET] }], news: [] }, metadata: {} }),
+  [URLS.youcomContents]: ok([{ url: CHECK_URL, title: TITLE, markdown: PAGE, html: null }]),
+  [URLS.youcomBalance]: ok(fixture("youcom-balance")),
 };
 
 /** A clock that advances 42 ms per reading, so every latency is 42 ms. */
@@ -68,7 +85,7 @@ describe("check", () => {
     const report = await runCheck({ env: KEYS, fetch, now: () => new Date("2026-10-11T12:00:00Z"), clock: () => 1000 });
 
     expect(report.ok).toBe(true);
-    expect(report).toMatchObject({ attempted: 12, passed: 12, failed: 0, query: "startup credits", maxResults: 3, url: "https://example.com" });
+    expect(report).toMatchObject({ attempted: 18, passed: 18, failed: 0, query: "startup credits", maxResults: 3, url: "https://example.com" });
 
     // One call per endpoint: no routing, no failover, no retries.
     const urls = calls.map((call) => call.url.split("?")[0]);
@@ -80,6 +97,10 @@ describe("check", () => {
     expect(calls.find((c) => c.url === URLS.parallelSearch)?.body).toMatchObject({ objective: "startup credits", search_queries: ["startup credits"], advanced_settings: { max_results: 3 } });
     expect(calls.find((c) => c.url.startsWith(URLS.keenableFetch))?.url).toBe("https://api.keenable.ai/v1/fetch?url=https%3A%2F%2Fexample.com&live=true");
     expect(calls.find((c) => c.url === URLS.tavilyExtract)?.body).toMatchObject({ urls: ["https://example.com"] });
+    expect(calls.find((c) => c.url === URLS.linkupSearch)?.body).toMatchObject({ q: "startup credits", maxResults: 3 });
+    expect(calls.find((c) => c.url === URLS.linkupFetch)?.body).toEqual({ url: "https://example.com" });
+    expect(calls.find((c) => c.url === URLS.youcomSearch)?.body).toEqual({ query: "startup credits", count: 3 });
+    expect(calls.find((c) => c.url === URLS.youcomContents)?.body).toMatchObject({ urls: ["https://example.com"] });
 
     // Each key went only to its own provider.
     for (const call of calls) {
@@ -110,6 +131,17 @@ describe("check", () => {
       { kind: "pay-as-you-go", fields: ["remaining", "total", "unit"] },
       { kind: "key-limit", fields: ["remaining", "total", "unit"] },
     ]);
+    // Linkup and You.com each report one USD amount: no total, no end date.
+    for (const id of ["linkup", "youcom"]) {
+      expect(report.providers.find((p) => p.provider === id)).toMatchObject({
+        balanceSupported: true,
+        calls: [
+          { capability: "search", ok: true, resultCount: 1 },
+          { capability: "scrape", ok: true, markdownLength: PAGE.length },
+          { capability: "balance", ok: true, balances: [{ kind: "credits", fields: ["remaining", "unit"] }] },
+        ],
+      });
+    }
 
     const text = formatCheck(report);
     expect(text).toContain("exa (EXA_API_KEY, from the environment)");
@@ -117,11 +149,13 @@ describe("check", () => {
     expect(text).toContain(`  scrape   ok                        0 ms  markdown, ${PAGE.length} chars`);
     expect(text).toContain("  balance  -                               no public balance endpoint (add your credits in config)");
     expect(text).toContain("  balance  ok                        0 ms  credits (remaining, total, unit, endsOn)");
-    expect(text).toContain("PASS: 12 of 12 calls passed.");
+    expect(text).toContain("PASS: 18 of 18 calls passed.");
     expectNoContent(text);
     expectNoContent(JSON.stringify(report));
     // Balance amounts are not part of the report either.
     expect(JSON.stringify(report)).not.toContain("500000");
+    expect(JSON.stringify(report)).not.toContain("123.456");
+    expect(JSON.stringify(report)).not.toContain("7189");
   });
 
   // [name, response, outcome, HTTP status, documented code shown]
@@ -147,7 +181,7 @@ describe("check", () => {
       expect(search).not.toHaveProperty("providerMessage");
       expect(report).toMatchObject({ ok: false, attempted: 2, passed: 1, failed: 1, verbose: false });
       expect(formatCheck(report)).toContain(`  search   FAIL ${outcome}`);
-      expect(formatCheck(report)).toContain("FAIL: 1 of 2 calls passed, 1 failed; 4 providers skipped (no key).");
+      expect(formatCheck(report)).toContain("FAIL: 1 of 2 calls passed, 1 failed; 6 providers skipped (no key).");
 
       const { streams } = io();
       expect(await main(["check"], streams, { env: { EXA_API_KEY: KEYS.EXA_API_KEY }, fetch })).toBe(1);
@@ -161,6 +195,8 @@ describe("check", () => {
       [URLS.tavilySearch]: status(432, fixture("tavily-error-432")),
       [URLS.parallelSearch]: status(402, { type: "error", error: { ref_id: "r", message: "Insufficient credit in account" } }),
       [URLS.keenableFetch]: status(402, { detail: "No credits available" }),
+      [URLS.linkupSearch]: status(429, fixture("linkup-error-429")),
+      [URLS.youcomSearch]: status(402, { detail: "Insufficient credits" }),
     });
     const report = await runCheck({ env: KEYS, fetch });
     const outcome = (provider: string, capability: string) =>
@@ -169,10 +205,37 @@ describe("check", () => {
     expect(outcome("tavily", "search")).toMatchObject({ outcome: "exhausted", status: 432 });
     expect(outcome("parallel", "search")).toMatchObject({ outcome: "exhausted", status: 402 });
     expect(outcome("keenable", "scrape")).toMatchObject({ outcome: "exhausted", status: 402 });
-    expect(report.failed).toBe(4);
+    expect(outcome("linkup", "search")).toMatchObject({ outcome: "exhausted", status: 429, code: "INSUFFICIENT_FUNDS_CREDITS" });
+    expect(outcome("youcom", "search")).toMatchObject({ outcome: "exhausted", status: 402 });
+    expect(outcome("youcom", "search")).not.toHaveProperty("code");
+    expect(report.failed).toBe(6);
     // The providers' own words stay out of the default report.
     expect(JSON.stringify(report)).not.toContain("Insufficient credit");
     expect(JSON.stringify(report)).not.toContain("No credits available");
+    expect(JSON.stringify(report)).not.toContain("Insufficient credits");
+    expect(JSON.stringify(report)).not.toContain("enough credits");
+  });
+
+  it("tells Linkup's rate limit apart from its spent credits, and keeps a You.com scope 403 from reading as a bad key", async () => {
+    const { fetch } = mockFetch({
+      ...success,
+      [URLS.linkupSearch]: status(429, { statusCode: 429, error: { code: "TOO_MANY_REQUESTS", message: "Too many requests", details: [] } }),
+      [URLS.linkupFetch]: status(400, { statusCode: 400, error: { code: "FETCH_TARGET_UNREACHABLE", message: "Unreachable", details: [] } }),
+      [URLS.youcomContents]: status(403, { detail: "Missing required scopes" }),
+    });
+    const report = await runCheck({ env: { LINKUP_API_KEY: KEYS.LINKUP_API_KEY, YDC_API_KEY: KEYS.YDC_API_KEY }, fetch });
+    const calls = (provider: string) => report.providers.find((p) => p.provider === provider)?.calls;
+    expect(calls("linkup")).toMatchObject([
+      { capability: "search", outcome: "rate_limited", status: 429, code: "TOO_MANY_REQUESTS" },
+      { capability: "scrape", outcome: "fetch_failed", status: 400, code: "FETCH_TARGET_UNREACHABLE" },
+      { capability: "balance", ok: true },
+    ]);
+    expect(calls("youcom")).toMatchObject([
+      { capability: "search", ok: true },
+      { capability: "scrape", outcome: "provider_error", status: 403 },
+      { capability: "balance", ok: true },
+    ]);
+    expectNoContent(JSON.stringify(report));
   });
 
   it("reads Parallel's documented error envelope for a rejected request", async () => {
@@ -205,7 +268,15 @@ describe("check", () => {
     const routes: Record<string, Responder> = {};
     for (const url of Object.values(URLS)) routes[url] = responder;
     const { fetch } = mockFetch(routes);
-    const env = { EXA_API_KEY: "abc", FIRECRAWL_API_KEY: "fc-x", KEENABLE_API_KEY: "kx", PARALLEL_API_KEY: "p", TAVILY_API_KEY: "t-1" };
+    const env = {
+      EXA_API_KEY: "abc",
+      FIRECRAWL_API_KEY: "fc-x",
+      KEENABLE_API_KEY: "kx",
+      LINKUP_API_KEY: "lk-x",
+      PARALLEL_API_KEY: "p",
+      TAVILY_API_KEY: "t-1",
+      YDC_API_KEY: "yd-x",
+    };
 
     const text = io();
     expect(await main(["check"], text.streams, { env, fetch })).toBe(1);
@@ -244,7 +315,7 @@ describe("check", () => {
     expect(text.out.join("").startsWith(`${VERBOSE_WARNING}\n`)).toBe(true);
     expect(text.out.join("")).toContain("provider said (not for sharing): bad key");
     const report = JSON.parse(json_.out.join(""));
-    expect(report).toMatchObject({ verbose: true, warning: VERBOSE_WARNING, failed: 12 });
+    expect(report).toMatchObject({ verbose: true, warning: VERBOSE_WARNING, failed: 18 });
     for (const output of [text.out.join(""), JSON.stringify(report)]) {
       expect(output).toContain("[redacted]");
       expectNoContent(output);
@@ -302,7 +373,9 @@ describe("check", () => {
     expect(text).toContain("exa: skipped (no key: set EXA_API_KEY or run `programscape-router keys set exa`)");
     expect(text).toContain("parallel: skipped (no key: set PARALLEL_API_KEY or run `programscape-router keys set parallel`)");
     expect(text).toContain("tavily (TAVILY_API_KEY, from the environment)");
-    expect(text).toContain("PASS: 3 of 3 calls passed; 4 providers skipped (no key).");
+    expect(text).toContain("linkup: skipped (no key: set LINKUP_API_KEY or run `programscape-router keys set linkup`)");
+    expect(text).toContain("youcom: skipped (no key: set YDC_API_KEY or run `programscape-router keys set youcom`)");
+    expect(text).toContain("PASS: 3 of 3 calls passed; 6 providers skipped (no key).");
     expect(calls.every((call) => new URL(call.url).host === "api.tavily.com")).toBe(true);
   });
 
@@ -319,8 +392,8 @@ describe("check", () => {
     const { streams, out } = io();
     expect(await main(["check", "--json"], streams, { env: KEYS, fetch })).toBe(0);
     const report = JSON.parse(out.join(""));
-    expect(report).toMatchObject({ ok: true, attempted: 12, passed: 12, failed: 0 });
-    expect(report.providers.map((p: { provider: string }) => p.provider)).toEqual(["exa", "firecrawl", "keenable", "parallel", "tavily"]);
+    expect(report).toMatchObject({ ok: true, attempted: 18, passed: 18, failed: 0 });
+    expect(report.providers.map((p: { provider: string }) => p.provider)).toEqual(["exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"]);
     expectNoContent(out.join(""));
   });
 

@@ -4,6 +4,38 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
+## 1.1.0 (unreleased)
+
+Two new providers, each built from its official API docs (read October 12, 2026; linked at the top of each adapter).
+Not yet run against the live APIs with real keys: `programscape-router check` does that.
+
+### Added
+
+- **Linkup** (`linkup`, key `LINKUP_API_KEY`): search through `POST /v1/search` (`depth: "fast"`,
+  `outputType: "searchResults"`; image results are dropped), scrape through `POST /v1/fetch` (standard mode, no
+  JavaScript rendering), and a live balance from `GET /v1/credits/balance`, in US dollars with no total or end date.
+  Linkup's errors are read by their `error.code`: a 429 with `INSUFFICIENT_FUNDS_CREDITS` or `EXCEED_BUDGET_LIMIT` is
+  `exhausted` (Linkup signals spent credits with 429, not 402), any other 429 is `rate_limited`; a 402 (Linkup's x402
+  payment challenge, sent only when no key arrived) is `unauthorized`; a 400 `SEARCH_QUERY_NO_RESULT` is an empty
+  result list; a 400 with a `FETCH_*` code is `fetch_failed`, so the router tries the next provider; a 504
+  `REQUEST_DEADLINE_EXCEEDED` is `timeout`. `check` may show these documented codes.
+- **You.com** (`youcom`, key `YDC_API_KEY`): search through `POST https://ydc-index.io/v1/search` (web results, then
+  news results not already listed; only news results carry a publication date), scrape through
+  `POST https://ydc-index.io/v1/contents` (markdown), and a live balance from
+  `GET https://api.you.com/v1/billing/account_balance`, which You.com reports in cents and the router shows in
+  dollars (divided by 100, never rounded). 402 is `exhausted`, 429 `rate_limited`, 401 `unauthorized`. A 403
+  `Missing required scopes` (the key has no scope for that endpoint) is `provider_error`, not `unauthorized`, so
+  You.com stays on for what the key can do. You.com documents no error codes, so `check` shows only its HTTP status.
+  Nothing caches You.com's results, as its API Acceptable Use Policy asks.
+- `keys set linkup` and `keys set youcom` store the keys in the OS keychain under the accounts `LINKUP_API_KEY` and
+  `YDC_API_KEY`. `check`, `status`, the MCP tools and the opt-in balance sync cover both providers. A dollar balance
+  with a fraction of a cent isn't synced (Programscape records dollars to the cent, and the router never rounds).
+
+### Changed
+
+- `PROVIDER_IDS` and the `ProviderId` type now include `linkup` and `youcom` (seven providers, alphabetically). Code
+  that switches exhaustively over `ProviderId` needs the two new cases.
+
 ## 1.0.0 (October 12, 2026)
 
 The first release meant for npm. 0.1.0 was only ever installed from GitHub.

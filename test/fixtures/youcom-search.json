@@ -1,0 +1,36 @@
+{
+  "results": {
+    "web": [
+      {
+        "url": "https://timesofindia.indiatimes.com/topic/geopolitics/news",
+        "title": "Geopolitics News | Latest News on Geopolitics - Times of India",
+        "description": "European nations, particularly Denmark and Norway, are scrutinizing ...",
+        "snippets": ["European nations, particularly Denmark and Norway, ...", "A second snippet."],
+        "page_age": "2025-11-24T08:00:00",
+        "thumbnail_url": "https://example.com/thumb.jpg",
+        "favicon_url": "https://example.com/favicon.ico"
+      },
+      {
+        "url": "https://example.com/description-only",
+        "title": "Description only",
+        "description": "Only a description."
+      }
+    ],
+    "news": [
+      {
+        "title": "India entering golden era of defence innovation: Rajnath",
+        "description": "Defence minister speaks at an innovation summit.",
+        "page_age": "2025-11-25T12:31:29",
+        "url": "https://theprint.in/defence/india-golden-era-defence-innovation/",
+        "thumbnail_url": "https://example.com/news-thumb.jpg"
+      },
+      {
+        "title": "Also a web result",
+        "description": "Listed in both sections.",
+        "page_age": "2025-11-24T08:00:00",
+        "url": "https://example.com/description-only"
+      }
+    ]
+  },
+  "metadata": { "search_uuid": "942ccbdd-7705-4d9c-9d37-4ef386658e90", "query": "global birth rate trends", "latency": 0.4 }
+}
