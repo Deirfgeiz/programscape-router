@@ -150,9 +150,10 @@ The npm package is `@programscape/router`. Run it with `npx @programscape/router
 You need Node 22 or later. On Windows: `winget install OpenJS.NodeJS.LTS`. On macOS and Linux: the LTS installer
 from [nodejs.org](https://nodejs.org), or your package manager.
 
-Once the router is on npm, there is nothing else to install: `npx @programscape/router` runs the latest version.
-Until then, run it from GitHub: use `npx github:Deirfgeiz/programscape-router` wherever this page says
-`npx @programscape/router`. It builds itself on install.
+There is nothing else to install: `npx @programscape/router` runs the latest version from
+[npm](https://www.npmjs.com/package/@programscape/router). To run the newest code from GitHub instead, use
+`npx github:Deirfgeiz/programscape-router` wherever this page says `npx @programscape/router`; it builds itself on
+install.
 
 The keychain support comes as a small prebuilt native module (`@napi-rs/keyring`) for macOS, Windows and Linux, so
 no compiler is needed. It is an optional dependency: if it can't be installed on your system, or you install with

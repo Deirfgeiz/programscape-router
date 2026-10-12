@@ -4,7 +4,7 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
-## 1.0.0 (unreleased)
+## 1.0.0 (October 12, 2026)
 
 The first release meant for npm. 0.1.0 was only ever installed from GitHub.
 
