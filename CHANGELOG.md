@@ -28,7 +28,20 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   Where there is no keychain, the router still works with environment variables, and `keys` says why. `status` and
   `check` show each key's source (`env`, `keychain` or none). `resolveKeys()` does the same for library users.
 - The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Only where there
-  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which.
+  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which. Every save carries a
+  sequence number and reads take the newest copy across both stores; a fallback write deletes the older keychain
+  copy, and a later keychain write deletes the file, so a rotated-out refresh token is never reused.
+- `disconnect` reports the remote revocation, the keychain and the token file separately, reads both stores back,
+  and exits 1 unless the tokens are revoked and gone everywhere, naming what is left and how to delete it by hand
+  (Keychain Access, Credential Manager or Secret Service entry names, and the matching `security`, `cmdkey` or
+  `secret-tool` command).
+- Keychain errors never carry the native library's text: each operation prints a fixed message and a problem class
+  (`no-secret-service`, `no-default-keychain`, `locked`, `access-denied`, `too-large`, `failed`). Redaction of keys
+  and tokens in routing messages and `check --verbose` now covers secrets of any length.
+- The keychain service is fixed at `programscape-router`; no environment variable can change it. CI's real keychain
+  round trips use a test-only entry script (`scripts/keychain-cli.mjs`, not published).
+- The build no longer needs the optional module's type files, so a source or GitHub install with
+  `--omit=optional` still builds and runs with environment variables (checked in CI).
 - Windows: config in `%APPDATA%\programscape-router`, state (ledger, sync record, and the token file if one is
   needed) in `%LOCALAPPDATA%\programscape-router`; `XDG_CONFIG_HOME` and `XDG_STATE_HOME` still win when set. A
   `chmod` never fails a write on Windows. Browser sign-in opens the URL as one argument with no shell, so `&` in it

@@ -15,10 +15,15 @@ import { PROVIDER_IDS, type ProviderId } from "./types.js";
 export const KEYCHAIN_SERVICE = "programscape-router";
 
 /**
- * Overrides the keychain service name. For the CI round trip only, so it never touches a real
- * `programscape-router` entry; not a documented option.
+ * The service used when openKeychain isn't given one. Only test code changes it (useKeychainServiceForTests), so
+ * the CI round trip never touches a real entry. Nothing in the environment can change it.
  */
-const TEST_SERVICE_ENV = "PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE";
+let defaultService = KEYCHAIN_SERVICE;
+
+/** Test seam: the keychain service the CLI and the token store use. Never called by the router itself. */
+export function useKeychainServiceForTests(service: string = KEYCHAIN_SERVICE): void {
+  defaultService = service;
+}
 
 /** The environment variable each provider's key is read from, which is also its keychain account name. */
 export const KEY_ENV_VARS: Readonly<Record<ProviderId, string>> = Object.fromEntries(
@@ -48,8 +53,11 @@ export interface Keychain {
   remove(account: string): Promise<boolean>;
 }
 
-/** The shape of @napi-rs/keyring this module uses. */
-interface KeyringModule {
+/**
+ * The part of @napi-rs/keyring this module uses, declared here so the build never needs the optional package's own
+ * type files: a source install with optional dependencies omitted still builds.
+ */
+export interface KeyringModule {
   AsyncEntry: new (
     service: string,
     account: string,
@@ -64,12 +72,26 @@ interface KeyringModule {
 /** Loads the native keyring module. Tests replace it. */
 export type KeyringLoader = () => Promise<KeyringModule>;
 
-const defaultLoader: KeyringLoader = async () => (await import("@napi-rs/keyring")) as unknown as KeyringModule;
+// A variable specifier: TypeScript doesn't resolve it, so the build doesn't depend on the optional package.
+const KEYRING_MODULE: string = "@napi-rs/keyring";
+const defaultLoader: KeyringLoader = async () => (await import(KEYRING_MODULE)) as KeyringModule;
+
+/** What went wrong with the keychain, as one of a fixed set of classes. Never the native error's own text. */
+export type KeychainProblem =
+  | "module-missing"
+  | "no-secret-service"
+  | "no-default-keychain"
+  | "locked"
+  | "access-denied"
+  | "too-large"
+  | "failed";
 
 export class KeychainUnavailableError extends Error {
-  constructor(message: string) {
+  readonly problem: KeychainProblem;
+  constructor(message: string, problem: KeychainProblem) {
     super(message);
     this.name = "KeychainUnavailableError";
+    this.problem = problem;
   }
 }
 
@@ -82,45 +104,69 @@ function storeLabel(platform: NodeJS.Platform): string {
   return "the Secret Service keyring";
 }
 
-/** A short, key-free reason from a keyring error. */
-function reasonOf(error: unknown, secret?: string): string {
-  let text = error instanceof Error ? error.message : String(error);
-  if (secret && secret.length >= 4) text = text.split(secret).join("[redacted]");
-  text = text.replace(/\s+/g, " ").trim();
-  return text.length > 200 ? `${text.slice(0, 197)}...` : text;
+/**
+ * Sorts a native keyring error into a fixed class. Its text is only matched against, never kept or printed: on a
+ * path that handles a secret, the text could hold the secret itself (of any length).
+ */
+export function classifyKeychainError(error: unknown, platform: NodeJS.Platform): KeychainProblem {
+  const text = error instanceof Error ? `${error.message} ${(error as { code?: unknown }).code ?? ""}` : String(error);
+  if (/secret ?service|dbus|d-bus|org\.freedesktop/i.test(text)) return "no-secret-service";
+  if (/default keychain/i.test(text)) return "no-default-keychain";
+  if (/locked/i.test(text)) return "locked";
+  if (/denied|not allowed|cancel|permission|unauthori[sz]ed/i.test(text)) return "access-denied";
+  if (/too (long|large|big)|longer than|size|length|limit/i.test(text)) return "too-large";
+  // On Linux an unrecognised failure almost always means no Secret Service is running.
+  return platform === "linux" ? "no-secret-service" : "failed";
 }
 
-function unavailable(platform: NodeJS.Platform, error: unknown, secret?: string): KeychainUnavailableError {
-  const reason = reasonOf(error, secret);
-  if (platform === "linux") {
+const PROBLEM_WORDS: Record<KeychainProblem, string> = {
+  "module-missing": "its native module could not be loaded",
+  "no-secret-service": "no Secret Service answered",
+  "no-default-keychain": "there is no default keychain for this user",
+  locked: "it is locked",
+  "access-denied": "access was denied",
+  "too-large": "the entry is too large for it",
+  failed: "it reported an error",
+};
+
+/** A fixed message per operation and problem class. */
+function unavailable(platform: NodeJS.Platform, operation: "read" | "save" | "delete", error: unknown): KeychainUnavailableError {
+  const problem = classifyKeychainError(error, platform);
+  const label = storeLabel(platform);
+  const what = { read: "read from", save: "save to", delete: "delete from" }[operation];
+  if (problem === "no-secret-service") {
     return new KeychainUnavailableError(
-      `No keychain is available here: on Linux the router stores keys in the Secret Service (GNOME Keyring or KWallet), and none answered (${reason}). ${ALTERNATIVES}`,
+      `No keychain is available here: on Linux the router stores keys in the Secret Service (GNOME Keyring or KWallet), and none answered. ${ALTERNATIVES}`,
+      problem,
     );
   }
-  const label = storeLabel(platform);
-  return new KeychainUnavailableError(`${label.charAt(0).toUpperCase()}${label.slice(1)} could not be used (${reason}). ${ALTERNATIVES}`);
+  return new KeychainUnavailableError(`Could not ${what} ${label}: ${PROBLEM_WORDS[problem]} (${problem}). ${ALTERNATIVES}`, problem);
 }
 
 export interface KeychainOptions {
+  /** Kept for callers; the keychain no longer reads anything from the environment. */
   env?: Record<string, string | undefined>;
   loader?: KeyringLoader;
   platform?: NodeJS.Platform;
+  /** Test seam: the keychain service. Defaults to programscape-router. The CLI never sets it. */
+  service?: string;
 }
 
 /**
  * Opens the OS keychain. Throws KeychainUnavailableError, with a message that says what to do instead, when the
  * native module can't be loaded. A keychain that loads but can't be reached fails on first use the same way.
+ * No error from here ever carries a native error's text.
  */
 export async function openKeychain(options: KeychainOptions = {}): Promise<Keychain> {
-  const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
-  const service = env[TEST_SERVICE_ENV] || KEYCHAIN_SERVICE;
+  const service = options.service ?? defaultService;
   let keyring: KeyringModule;
   try {
     keyring = await (options.loader ?? defaultLoader)();
   } catch {
     throw new KeychainUnavailableError(
       `The OS keychain isn't available: its native module (@napi-rs/keyring, an optional dependency with prebuilt binaries for macOS, Windows and Linux) could not be loaded on this system (${platform} ${process.arch}). ${ALTERNATIVES}`,
+      "module-missing",
     );
   }
   // On Linux, require the Secret Service. Without it the library would fall back to the kernel keyring, which
@@ -134,24 +180,35 @@ export async function openKeychain(options: KeychainOptions = {}): Promise<Keych
       try {
         return await entry(account).getPassword();
       } catch (error) {
-        throw unavailable(platform, error);
+        throw unavailable(platform, "read", error);
       }
     },
     async set(account, secret) {
       try {
         await entry(account).setPassword(secret);
       } catch (error) {
-        throw unavailable(platform, error, secret);
+        throw unavailable(platform, "save", error);
       }
     },
     async remove(account) {
       try {
         return await entry(account).deleteCredential();
       } catch (error) {
-        throw unavailable(platform, error);
+        throw unavailable(platform, "delete", error);
       }
     },
   };
+}
+
+/** How to find and delete an entry by hand, per system. */
+export function manualRemoval(service: string, account: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform === "darwin") {
+    return `In Keychain Access, delete the item "${service}" with account "${account}", or run: security delete-generic-password -s ${service} -a ${account}`;
+  }
+  if (platform === "win32") {
+    return `In Credential Manager (Windows Credentials, Generic Credentials), remove "${account}.${service}", or run: cmdkey /delete:${account}.${service}`;
+  }
+  return `In your keyring app (Seahorse or KWallet Manager), delete the item for service "${service}", username "${account}", or run: secret-tool clear service ${service} username ${account}`;
 }
 
 /** The keys in the environment alone, without touching the keychain. */

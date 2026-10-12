@@ -135,8 +135,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
   /** Removes token material from a message, whatever produced it. */
   function clean(message: string): string {
     let text = message;
-    for (const secret of connection.secrets()) {
-      if (secret.length >= 4) text = text.split(secret).join("[redacted]");
+    for (const secret of [...connection.secrets()].sort((a, b) => b.length - a.length)) {
+      if (secret.length > 0) text = text.split(secret).join("[redacted]");
     }
     return text;
   }

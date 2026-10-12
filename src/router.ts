@@ -164,8 +164,9 @@ export function createRouter(options: RouterOptions = {}): Router {
 
   function redact(message: string): string {
     let clean = message;
-    for (const key of keys.values()) {
-      if (key.length >= 4) clean = clean.split(key).join("[redacted]");
+    // Every key, however short, longest first so one key inside another is still caught.
+    for (const key of [...keys.values()].sort((a, b) => b.length - a.length)) {
+      if (key.length > 0) clean = clean.split(key).join("[redacted]");
     }
     return clean.length > 500 ? `${clean.slice(0, 497)}...` : clean;
   }

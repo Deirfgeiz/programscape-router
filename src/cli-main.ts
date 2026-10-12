@@ -161,11 +161,33 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   }
 
   if (command === "disconnect") {
-    const result = await disconnect({ env: options.env ?? process.env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
-    if (!result.wasConnected) io.stdout("Programscape sync was not connected. Nothing to do.\n");
-    else if (result.revoked) io.stdout("Disconnected: Programscape revoked the router's access and the token file is deleted.\n");
-    else io.stdout("Disconnected: the token file is deleted. Programscape could not confirm the revocation; you can also remove the router's access on programscape.com.\n");
-    return 0;
+    const result = await disconnect({ env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
+    const { local } = result;
+    if (!result.wasConnected && local.gone) {
+      io.stdout("Programscape sync was not connected. Nothing to do.\n");
+      return 0;
+    }
+    const words = { deleted: "deleted", absent: "none there", failed: "COULD NOT DELETE", unavailable: "no keychain here" } as const;
+    io.stdout(
+      [
+        "Disconnect from Programscape:",
+        `  Programscape: ${result.revoked ? "revoked the router's access" : "could not confirm the revocation"}`,
+        `  OS keychain: ${words[local.keychain]}`,
+        `  token file: ${words[local.file]}`,
+        "",
+      ].join("\n"),
+    );
+    if (!local.gone) {
+      io.stderr(`A sign-in token is still stored on this machine. Remove it by hand:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+    }
+    if (!result.revoked && result.wasConnected) {
+      io.stderr("Programscape did not confirm the revocation: remove the router's access on programscape.com as well.\n");
+    }
+    if (local.gone && (result.revoked || !result.wasConnected)) {
+      io.stdout("Disconnected: no token is left on this machine, and Programscape revoked it.\n");
+      return 0;
+    }
+    return 1;
   }
 
   const {

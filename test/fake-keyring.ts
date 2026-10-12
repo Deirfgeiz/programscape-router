@@ -8,10 +8,13 @@ export const fakeKeyring = {
   available: true,
   /** The options each entry was created with. */
   entryOptions: [] as unknown[],
+  /** Operations that fail, each with the native error text to throw (which tests fill with secrets). */
+  failing: {} as Partial<Record<"get" | "set" | "delete", string>>,
   reset() {
     this.store.clear();
     this.available = true;
     this.entryOptions = [];
+    this.failing = {};
   },
   put(service: string, account: string, secret: string) {
     this.store.set(`${service}\u0000${account}`, secret);
@@ -21,8 +24,10 @@ export const fakeKeyring = {
   },
 };
 
-function check(): void {
+function check(op: "get" | "set" | "delete"): void {
   if (!fakeKeyring.available) throw new Error("Platform secure storage failure: no Secret Service provider is running");
+  const message = fakeKeyring.failing[op];
+  if (message !== undefined) throw new Error(message);
 }
 
 export class AsyncEntry {
@@ -32,15 +37,15 @@ export class AsyncEntry {
     fakeKeyring.entryOptions.push(options);
   }
   async getPassword(): Promise<string | null> {
-    check();
+    check("get");
     return fakeKeyring.store.get(this.id) ?? null;
   }
   async setPassword(password: string): Promise<void> {
-    check();
+    check("set");
     fakeKeyring.store.set(this.id, password);
   }
   async deleteCredential(): Promise<boolean> {
-    check();
+    check("delete");
     return fakeKeyring.store.delete(this.id);
   }
 }

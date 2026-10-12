@@ -57,7 +57,9 @@ npx programscape-router keys list            # which keys are set and where from
 
 Providers are `exa`, `firecrawl`, `keenable`, `parallel` and `tavily`. That's all: the router finds the keys
 itself, so your agent's config holds none (see [Add it to your agent](#add-it-to-your-agent)).
-`keys remove tavily` deletes one. To store a key from a script, pipe it in: `... | npx programscape-router keys set
+`keys remove tavily` deletes one. Keys are stored under service `programscape-router`, with the variable name
+(such as `TAVILY_API_KEY`) as the account, so you can also find them in Keychain Access, Credential Manager (as
+`TAVILY_API_KEY.programscape-router`) or Seahorse. To store a key from a script, pipe it in: `... | npx programscape-router keys set
 tavily --stdin`.
 
 - An environment variable always wins over the keychain, so `op run` (below) and CI keep working.
@@ -150,7 +152,9 @@ Until then, run it from GitHub: use `npx github:Deirfgeiz/programscape-router` w
 `npx programscape-router`. It builds itself on install.
 
 The keychain support comes as a small prebuilt native module (`@napi-rs/keyring`) for macOS, Windows and Linux, so
-no compiler is needed. If it can't be installed on your system, the router still works with environment variables.
+no compiler is needed. It is an optional dependency: if it can't be installed on your system, or you install with
+`--omit=optional`, the router (including the GitHub install, which builds itself) still installs and works with
+environment variables, and `keys` says the keychain isn't available.
 
 ## Quick check
 
@@ -397,7 +401,8 @@ Only after `connect`, and only to `https://programscape.com`. There are three ki
   email or password. Programscape sends the browser back to `127.0.0.1` with a one-time code, which the router
   exchanges (with its PKCE verifier) for an access token and a refresh token.
 - When the access token expires, the router sends the refresh token to get a new pair.
-- `disconnect` sends both tokens to Programscape's revocation endpoint, then deletes them.
+- `disconnect` sends both tokens to Programscape's revocation endpoint, then deletes them locally and checks that
+  they're gone.
 
 What comes back is the tokens. They are stored in your OS keychain (or, where there is none, in a token file; see
 [Connect and disconnect](#connect-and-disconnect)), sent only to `https://programscape.com`, and never printed or
@@ -444,8 +449,9 @@ npx programscape-router disconnect   # revokes the router's access and deletes t
 one). It listens on `127.0.0.1` only for the redirect, so no firewall asks to open a port.
 
 The tokens go in your OS keychain, beside your provider keys (service `programscape-router`, account
-`programscape-token`), and `connect` says so. Only where there is no keychain, or it refuses the entry, does the
-router write a token file instead, and `connect` names it:
+`programscape-token`), and `connect` says so. Only where there is no keychain, or it refuses the entry (for example a
+locked keychain, or an entry too large for Windows Credential Manager), does the router write a token file instead,
+and `connect` names it:
 
 - macOS and Linux: `~/.config/programscape-router/programscape-token.json` (or under `$XDG_CONFIG_HOME`), mode 600
   in a mode 700 folder, so only your user account can read it.
@@ -453,9 +459,34 @@ router write a token file instead, and `connect` names it:
   protected only by your profile folder's default permissions, which let your account, administrators and the
   system read it.
 
+Every save is numbered, and the router always uses the newest copy. When it falls back to the file, it deletes the
+older keychain copy; when the keychain works again, it deletes the file. So a token Programscape has already replaced
+is never used again, even if one store briefly can't be written.
+
 If Programscape stops accepting the tokens (for example after 30 days without use, or if you remove the router's
-access on programscape.com), sync turns itself off and says to run `connect` again. `disconnect` revokes them and
-deletes them from the keychain and the file.
+access on programscape.com), sync turns itself off and says to run `connect` again.
+
+`disconnect` asks Programscape to revoke both tokens, deletes them from the keychain and the file, then reads both
+back. It prints what happened in each place:
+
+```text
+Disconnect from Programscape:
+  Programscape: revoked the router's access
+  OS keychain: deleted
+  token file: none there
+Disconnected: no token is left on this machine, and Programscape revoked it.
+```
+
+It exits 0 only when the tokens are revoked and gone from both stores. Otherwise it exits 1 and says what is left and
+how to remove it by hand:
+
+- macOS: in Keychain Access, delete the item `programscape-router` with account `programscape-token`, or run
+  `security delete-generic-password -s programscape-router -a programscape-token`.
+- Windows: in Credential Manager (Windows Credentials, Generic Credentials), remove
+  `programscape-token.programscape-router`, or run `cmdkey /delete:programscape-token.programscape-router`.
+- Linux: in Seahorse or KWallet Manager, delete the item for service `programscape-router`, username
+  `programscape-token`, or run `secret-tool clear service programscape-router username programscape-token`.
+- If Programscape didn't confirm the revocation, also remove the router's access on programscape.com.
 
 ### Which program a balance goes to
 

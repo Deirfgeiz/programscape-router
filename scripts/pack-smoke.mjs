@@ -17,8 +17,10 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const work = mkdtempSync(join(tmpdir(), "psr-pack-smoke-"));
 const mode = process.argv.includes("--keychain") ? "keychain" : process.argv.includes("--no-keychain") ? "no-keychain" : "basic";
-// Every bin run uses a test keychain service, so a developer's real stored keys are never read or touched.
+// Every keychain-touching run uses a test service, through the test-only entry script scripts/keychain-cli.mjs
+// (the released CLI can't change the service), so a developer's real stored keys are never read or touched.
 const TEST_SERVICE = mode === "keychain" ? "programscape-router-ci" : "programscape-router-smoke-empty";
+const testEntry = join(root, "scripts", "keychain-cli.mjs");
 
 function run(cmd, args, cwd) {
   return execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
@@ -142,16 +144,18 @@ export async function use(): Promise<void> {
     ...homes,
     XDG_CONFIG_HOME: join(home, "config"),
     XDG_STATE_HOME: join(home, "state"),
-    PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: TEST_SERVICE,
   };
   // On Linux and macOS the keychain needs the session's own variables (D-Bus, the user) to reach the store.
   for (const name of ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP"]) {
     if (process.env[name]) baseEnv[name] = process.env[name];
   }
+  const packageRoot = join(app, "node_modules", "programscape-router");
+  // The installed package's own CLI, with the keychain service switched to the test one.
   const cli = (args, { env = {}, input } = {}) =>
-    spawnSync(process.execPath, [cliPath, ...args], { cwd: app, env: { ...baseEnv, ...env }, encoding: "utf8", input, timeout: 60_000 });
+    spawnSync(process.execPath, [testEntry, packageRoot, TEST_SERVICE, ...args], { cwd: app, env: { ...baseEnv, ...env }, encoding: "utf8", input, timeout: 60_000 });
 
-  const version = cli(["--version"]);
+  // The published bin itself, exactly as npx runs it.
+  const version = spawnSync(process.execPath, [cliPath, "--version"], { cwd: app, env: baseEnv, encoding: "utf8", timeout: 60_000 });
   if (version.stdout.trim() !== pkg.version) throw new Error(`bin --version printed ${version.stdout}`);
   const check = cli(["check", "--json"]);
   const report = JSON.parse(check.stdout);
@@ -188,6 +192,16 @@ function keychainRoundTrip(cli, app) {
     );
     if (read.stdout !== secret) throw new Error(`the keychain did not hold the key (got ${read.stdout.length} chars; ${read.stderr})`);
 
+    // The entry exists under the name the "remove it by hand" instructions give.
+    if (process.platform === "darwin") {
+      const found = spawnSync("security", ["find-generic-password", "-s", TEST_SERVICE, "-a", "EXA_API_KEY"], { encoding: "utf8" });
+      if (found.status !== 0) throw new Error(`security find-generic-password did not find the item: ${found.stderr}`);
+    } else if (process.platform === "win32") {
+      const target = `EXA_API_KEY.${TEST_SERVICE}`;
+      const found = spawnSync("cmdkey", [`/list:${target}`], { encoding: "utf8" });
+      if (!found.stdout.includes(target)) throw new Error(`cmdkey did not list ${target}: ${found.stdout}`);
+    }
+
     const list = expectRun(cli(["keys", "list", "--json"]), 0, "keys list");
     const exa = JSON.parse(list.stdout).keys.find((entry) => entry.provider === "exa");
     if (exa.source !== "keychain" || exa.inKeychain !== true || leaked(list)) throw new Error(`keys list: ${list.stdout}`);
@@ -200,7 +214,7 @@ function keychainRoundTrip(cli, app) {
     if (!removed.stdout.startsWith("Removed the Exa key from ")) throw new Error(`keys remove printed: ${removed.stdout}`);
     const after = JSON.parse(expectRun(cli(["keys", "list", "--json"]), 0, "keys list after remove").stdout);
     if (after.keys.find((entry) => entry.provider === "exa").source !== "none") throw new Error("the key was still listed after remove");
-    console.log(`keychain ok: set -> get -> list -> status -> remove in ${JSON.parse(list.stdout).keychain}`);
+    console.log(`keychain ok: set -> get -> named entry -> list -> status -> remove in ${JSON.parse(list.stdout).keychain}`);
   } finally {
     cli(["keys", "remove", "exa"]);
   }

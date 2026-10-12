@@ -31,6 +31,7 @@ import {
   readClientCache,
   readSyncState,
   readTokenFile,
+  type TokenDeletion,
   type TokenLocation,
   writeClientCache,
   writeSyncState,
@@ -231,6 +232,8 @@ export interface DisconnectResult {
   wasConnected: boolean;
   /** True when Programscape confirmed the revocation; false when it could not be reached or has no endpoint. */
   revoked: boolean;
+  /** What happened to the local copies, read back afterwards. */
+  local: TokenDeletion;
 }
 
 export async function disconnect(options: { env: NodeJS.ProcessEnv; fetch: FetchLike }): Promise<DisconnectResult> {
@@ -251,7 +254,7 @@ export async function disconnect(options: { env: NodeJS.ProcessEnv; fetch: Fetch
       revoked = false;
     }
   }
-  await deleteTokenFile(env);
+  const local = await deleteTokenFile(env);
   await deleteSyncState(env);
-  return { wasConnected: Boolean(tokens), revoked };
+  return { wasConnected: Boolean(tokens), revoked, local };
 }

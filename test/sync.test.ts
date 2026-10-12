@@ -11,6 +11,7 @@ import { ProgramscapeError, programscapeFetch } from "../src/programscape/guard.
 import { amountIssue, mapProgram, readPlanPrograms } from "../src/programscape/plan.js";
 import { TOKEN_KEYCHAIN_ACCOUNT, readSyncState, readTokenFile, tokenPath } from "../src/programscape/store.js";
 import { fakeKeyring } from "./fake-keyring.js";
+import { KEYCHAIN_SERVICE } from "../src/keys.js";
 import { AUTO_SYNC_INTERVAL_MS } from "../src/programscape/sync.js";
 import { createRouter } from "../src/router.js";
 import { type FakeOptions, type KeptProgram, combine, fakeProgramscape } from "./programscape-fake.js";
@@ -20,12 +21,7 @@ const START = new Date("2026-10-11T12:00:00Z");
 
 function homes() {
   const root = mkdtempSync(join(tmpdir(), "psr-sync-"));
-  // Each home gets its own keychain service too, so tokens stored by one test's connect stay with that home.
-  return {
-    XDG_CONFIG_HOME: join(root, "config"),
-    XDG_STATE_HOME: join(root, "state"),
-    PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: `programscape-router-test-${root.slice(-8)}`,
-  };
+  return { XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") };
 }
 
 const FIRECRAWL_ONE: KeptProgram[] = [
@@ -141,7 +137,7 @@ describe("connect", () => {
     const result = await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
     expect(result.stored).toEqual({ kind: "keychain", label: expect.any(String) });
     expect(existsSync(tokenPath(env))).toBe(false);
-    const entry = fakeKeyring.peek(env.PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT);
+    const entry = fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT);
     expect(JSON.parse(entry ?? "{}")).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET", refreshToken: "ps-REFRESH-1-TOKENSECRET" });
     const stored = await readTokenFile(env);
     expect(stored).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET", refreshToken: "ps-REFRESH-1-TOKENSECRET" });
@@ -149,7 +145,7 @@ describe("connect", () => {
     expect(stored).not.toHaveProperty("email");
 
     await disconnect({ env, fetch: fake.fetch });
-    expect(fakeKeyring.peek(env.PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBeUndefined();
+    expect(fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBeUndefined();
   });
 
   it("without a keychain, stores the tokens in a file: mode 600 in a mode 700 folder on macOS and Linux", async () => {
@@ -421,6 +417,8 @@ describe("sync", () => {
     expect(out.join("")).toContain("Programscape sync: on (last synced 2026-10-11T12:00:00.000Z; manual");
     expect(out.join("")).toContain("firecrawl: Synced 1000 credits");
 
+    // A machine that never connected: no token in its keychain either (the keychain is per user, not per folder).
+    fakeKeyring.reset();
     const fresh: string[] = [];
     await main(["status"], { stdout: (t) => fresh.push(t), stderr: () => {} }, { env: homes(), config: {}, ledgerPath: false });
     expect(fresh.join("")).toContain("Programscape sync: off (run `programscape-router connect` to turn it on)");
@@ -497,7 +495,8 @@ describe("disconnect", () => {
   it("revokes both tokens at the revocation endpoint and deletes the file", async () => {
     const { fake, env, fetch } = await connected();
     const result = await disconnect({ env, fetch });
-    expect(result).toEqual({ wasConnected: true, revoked: true });
+    expect(result).toEqual({ wasConnected: true, revoked: true, local: { keychain: "deleted", file: "absent", gone: true } });
+    expect(fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBeUndefined();
     expect(fake.revocations.map((form) => [form.get("token"), form.get("token_type_hint"), form.get("client_id")]).sort()).toEqual([
       ["ps-ACCESS-1-TOKENSECRET", "access_token", "client-1"],
       ["ps-REFRESH-1-TOKENSECRET", "refresh_token", "client-1"],
@@ -516,6 +515,7 @@ describe("sync command", () => {
     expect(await main(["sync"], { stdout: (t) => out.push(t), stderr: () => {} }, { env, config: {}, fetch, ledgerPath: false })).toBe(0);
     expect(out.join("")).toContain("firecrawl: Synced 1000 credits");
 
+    fakeKeyring.reset(); // a machine that never connected
     const err: string[] = [];
     expect(await main(["sync"], { stdout: () => {}, stderr: (t) => err.push(t) }, { env: homes(), config: {}, fetch, ledgerPath: false })).toBe(1);
     expect(err.join("")).toContain("Run `programscape-router connect` first");

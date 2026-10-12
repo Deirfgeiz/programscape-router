@@ -1,7 +1,7 @@
 import { PassThrough, Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { main } from "../src/cli-main.js";
-import { KEYCHAIN_SERVICE, KEY_ENV_VARS, resolveKeys } from "../src/keys.js";
+import { KEYCHAIN_SERVICE, KEY_ENV_VARS, classifyKeychainError, resolveKeys, useKeychainServiceForTests } from "../src/keys.js";
 import { PromptCancelledError, readFirstLine, readHidden } from "../src/prompt.js";
 import { ADAPTERS } from "../src/providers/index.js";
 import { PROVIDER_IDS } from "../src/types.js";
@@ -119,10 +119,27 @@ describe("resolveKeys", () => {
     expect(resolved.keychainNote).toContain("Keys in environment variables still work");
   });
 
-  it("uses the test service name only when the test variable is set", async () => {
+  it("ignores any environment variable that tries to pick another keychain service", async () => {
     fakeKeyring.put("programscape-router-ci", "EXA_API_KEY", "exa-ci");
+    fakeKeyring.put("some-other-app", "EXA_API_KEY", "exa-other");
+    const env = { PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: "programscape-router-ci", PROGRAMSCAPE_ROUTER_KEYCHAIN_SERVICE: "some-other-app" };
+    expect((await resolveKeys({ env })).keys.exa).toBeUndefined();
+    const { streams } = io();
+    expect(await main(["keys", "set", "exa", "--stdin"], streams, { env, stdin: Readable.from(["exa-mine\n"]) as never })).toBe(0);
+    expect(fakeKeyring.peek(KEYCHAIN_SERVICE, "EXA_API_KEY")).toBe("exa-mine");
+    expect(fakeKeyring.peek("programscape-router-ci", "EXA_API_KEY")).toBe("exa-ci");
+    expect(fakeKeyring.peek("some-other-app", "EXA_API_KEY")).toBe("exa-other");
+  });
+
+  it("uses another service only through the test seam", async () => {
+    fakeKeyring.put("programscape-router-ci", "EXA_API_KEY", "exa-ci");
+    useKeychainServiceForTests("programscape-router-ci");
+    try {
+      expect((await resolveKeys({ env: {} })).keys.exa).toBe("exa-ci");
+    } finally {
+      useKeychainServiceForTests();
+    }
     expect((await resolveKeys({ env: {} })).keys.exa).toBeUndefined();
-    expect((await resolveKeys({ env: { PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: "programscape-router-ci" } })).keys.exa).toBe("exa-ci");
   });
 });
 
@@ -323,3 +340,54 @@ describe("key sources in status and check", () => {
     expect(status.out.join("")).toContain("Keychain: No keychain is available here");
   });
 });
+
+describe("short secrets in native errors", () => {
+  // Characters our own messages never use, so any appearance is a leak.
+  const SHORT_KEYS = ["§", "¤¶", "¥µ¦"];
+
+  for (const key of SHORT_KEYS) {
+    it(`never prints a ${key.length}-character key from a native error, on set or remove`, async () => {
+      fakeKeyring.failing.set = `native refused to store ${key} for EXA_API_KEY`;
+      const set = io();
+      expect(await main(["keys", "set", "exa", "--stdin"], set.streams, { env: {}, stdin: Readable.from([`${key}\n`]) as never, platform: "darwin" })).toBe(1);
+      expect(set.err.join("")).toContain("Could not save to the macOS Keychain: it reported an error (failed).");
+      expect(set.all()).not.toContain(key);
+      expect(set.all()).not.toContain("native refused");
+
+      fakeKeyring.failing = { delete: `native could not delete ${key}` };
+      fakeKeyring.put(KEYCHAIN_SERVICE, "EXA_API_KEY", key);
+      const remove = io();
+      expect(await main(["keys", "remove", "exa"], remove.streams, { env: {}, platform: "win32" })).toBe(1);
+      expect(remove.err.join("")).toContain("Could not delete from Windows Credential Manager: it reported an error (failed).");
+      expect(remove.all()).not.toContain(key);
+
+      fakeKeyring.failing = { get: `native read ${key}` };
+      const list = io();
+      expect(await main(["keys", "list", "--json"], list.streams, { env: {}, platform: "darwin" })).toBe(0);
+      expect(list.all()).not.toContain(key);
+      expect(list.all()).not.toContain("native read");
+    });
+
+    it(`redacts a ${key.length}-character key in routing messages and check --verbose`, async () => {
+      const { fetch } = mockFetch({ [URLS.exaSearch]: () => new Response(JSON.stringify({ error: `bad key ${key}!` }), { status: 503 }) });
+      const err = io();
+      expect(await main(["search", "q"], err.streams, { env: { EXA_API_KEY: key }, config: {}, fetch, ledgerPath: false })).toBe(1);
+      expect(err.all()).toContain("bad key [redacted]!");
+      expect(err.all()).not.toContain(key);
+
+      const check = io();
+      await main(["check", "--json", "--verbose"], check.streams, { env: { EXA_API_KEY: key }, fetch });
+      expect(check.all()).not.toContain(key);
+    });
+  }
+
+  it("classifies native errors into fixed problems without keeping their text", () => {
+    expect(classifyKeychainError(new Error("A default keychain could not be found."), "darwin")).toBe("no-default-keychain");
+    expect(classifyKeychainError(new Error("The user name or passphrase you entered is not correct; locked"), "darwin")).toBe("locked");
+    expect(classifyKeychainError(new Error("org.freedesktop.DBus.Error.ServiceUnknown"), "linux")).toBe("no-secret-service");
+    expect(classifyKeychainError(new Error("anything else"), "linux")).toBe("no-secret-service");
+    expect(classifyKeychainError(new Error("Attribute 'password' is longer than platform limit of 2560 chars"), "win32")).toBe("too-large");
+    expect(classifyKeychainError(new Error("anything else"), "win32")).toBe("failed");
+  });
+});
+

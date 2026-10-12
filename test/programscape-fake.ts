@@ -58,6 +58,8 @@ export function fakeProgramscape(options: FakeOptions = {}) {
     metadataOverrides: {} as Record<string, unknown>,
     /** Make report_balance refuse with these words (as for a unit that doesn't match the founder's reminder). */
     refuseReport: undefined as string | undefined,
+    /** Make the revocation endpoint fail. */
+    revokeFails: false,
   };
 
   function issue() {
@@ -193,6 +195,7 @@ export function fakeProgramscape(options: FakeOptions = {}) {
         return json({ error: "unsupported_grant_type" }, 400);
       }
       case "/api/oauth/revoke": {
+        if (behaviour.revokeFails) return json({ error: "server_error" }, 503);
         const form = new URLSearchParams(body);
         revocations.push(form);
         access.delete(form.get("token") ?? "");

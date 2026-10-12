@@ -55,17 +55,16 @@ jobs:
       - name: Pipe a key in from PowerShell and cmd (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          PROGRAMSCAPE_ROUTER_TEST_KEYCHAIN_SERVICE: programscape-router-ci
         run: |
+          # The test-only entry point switches the keychain service to programscape-router-ci.
           # PowerShell pipes add CRLF; keys set --stdin must take the first line only.
-          'exa-from-pwsh' | node dist/cli.js keys set exa --stdin
+          'exa-from-pwsh' | node scripts/keychain-cli.mjs . programscape-router-ci keys set exa --stdin
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $list = node dist/cli.js keys list --json | ConvertFrom-Json
+          $list = node scripts/keychain-cli.mjs . programscape-router-ci keys list --json | ConvertFrom-Json
           if (($list.keys | Where-Object provider -eq 'exa').source -ne 'keychain') { exit 1 }
-          cmd /c "echo exa-from-cmd| node dist\cli.js keys set exa --stdin"
+          cmd /c "echo exa-from-cmd| node scripts\keychain-cli.mjs . programscape-router-ci keys set exa --stdin"
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          node dist/cli.js keys remove exa
+          node scripts/keychain-cli.mjs . programscape-router-ci keys remove exa
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Check the README's PowerShell prompts (Windows PowerShell 5.1)
         if: runner.os == 'Windows'
@@ -82,3 +81,25 @@ jobs:
         run: |
           $PSVersionTable.PSVersion
           if (-not (Get-Command Read-Host).Parameters.ContainsKey('MaskInput')) { exit 1 }
+
+  omit-optional:
+    name: build and run without the optional keychain module (ubuntu-latest, Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # As a source or GitHub install would, with optional dependencies left out: `prepare` builds without them.
+      - run: npm ci --omit=optional
+      - run: test ! -d node_modules/@napi-rs/keyring
+      - run: npm run build
+      - name: keys list exits cleanly and explains that the keychain is unavailable
+        run: |
+          out="$(node dist/cli.js keys list)"
+          echo "$out"
+          echo "$out" | grep -q "its native module (@napi-rs/keyring"
+      - name: the router still works with an environment key
+        run: EXA_API_KEY=exa-dummy node dist/cli.js status --json | node -e 'const s=JSON.parse(require("fs").readFileSync(0,"utf8")); if (s.providers.find(p=>p.id==="exa").keySource!=="env" || !s.keychainNote) process.exit(1)'
+
