@@ -1,3 +1,4 @@
+import { formatCheck, runCheck } from "./check.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { formatStatus } from "./format.js";
 import { type ConnectOptions, connect, disconnect } from "./programscape/connect.js";
@@ -24,6 +25,7 @@ Routes web search and scrape calls across your own provider keys, spending the c
 
 Usage:
   programscape-router [mcp]                      Run the MCP server on stdio (default)
+  programscape-router check [--json]             One live search, scrape and balance read per key set
   programscape-router status [--json] [--refresh]
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
@@ -100,6 +102,18 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   if (command === "--version" || command === "-v") {
     io.stdout(`${VERSION}\n`);
     return 0;
+  }
+
+  if (command === "check") {
+    // Calls each adapter directly: no config, no routing, no ledger, no Programscape.
+    const json = takeFlag(args, "--json");
+    const report = await runCheck({
+      env: options.env ?? process.env,
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(options.now ? { now: options.now } : {}),
+    });
+    io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : `${formatCheck(report)}\n`);
+    return report.ok ? 0 : 1;
   }
 
   if (command === "disconnect") {

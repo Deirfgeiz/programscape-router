@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { main } from "../src/cli-main.js";
+import { VERSION } from "../src/version.js";
 import { URLS, fixture, mockFetch, ok, status } from "./helpers.js";
 
 function io() {
@@ -96,8 +97,9 @@ describe("cli", () => {
     const help = io();
     expect(await main(["--help"], help.io)).toBe(0);
     expect(help.out.join("")).toContain("programscape-router status");
+    expect(help.out.join("")).toContain("programscape-router check [--json]");
     const version = io();
     expect(await main(["--version"], version.io)).toBe(0);
-    expect(version.out.join("")).toBe("0.1.0\n");
+    expect(version.out.join("")).toBe(`${VERSION}\n`);
   });
 });
