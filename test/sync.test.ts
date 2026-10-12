@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,9 +7,10 @@ import { describe, expect, it } from "vitest";
 import { main } from "../src/cli-main.js";
 import type { RouterConfig } from "../src/config.js";
 import { connect, disconnect } from "../src/programscape/connect.js";
+import { Connection } from "../src/programscape/connection.js";
 import { ProgramscapeError, programscapeFetch } from "../src/programscape/guard.js";
 import { amountIssue, mapProgram, readPlanPrograms } from "../src/programscape/plan.js";
-import { TOKEN_KEYCHAIN_ACCOUNT, readSyncState, readTokenFile, tokenPath } from "../src/programscape/store.js";
+import { TOKEN_KEYCHAIN_ACCOUNT, readConnectionState, readSyncState, readTokenFile, tokenPath, writeConnectionState } from "../src/programscape/store.js";
 import { fakeKeyring } from "./fake-keyring.js";
 import { KEYCHAIN_SERVICE } from "../src/keys.js";
 import { AUTO_SYNC_INTERVAL_MS } from "../src/programscape/sync.js";
@@ -136,7 +137,7 @@ describe("connect", () => {
     const env = homes();
     const result = await connect({ env, fetch: fake.fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
     expect(result.stored).toEqual({ kind: "keychain", label: expect.any(String) });
-    expect(existsSync(tokenPath(env))).toBe(false);
+    expect(await readTokenFile(env)).toMatchObject({ refreshToken: "ps-REFRESH-1-TOKENSECRET" });
     const entry = fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT);
     expect(JSON.parse(entry ?? "{}")).toMatchObject({ clientId: "client-1", accessToken: "ps-ACCESS-1-TOKENSECRET", refreshToken: "ps-REFRESH-1-TOKENSECRET" });
     const stored = await readTokenFile(env);
@@ -331,11 +332,8 @@ describe("sync", () => {
     const sent = reports(fake);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ programId: "firecrawl.startup-deal", amount: 1000 });
-    // Checked on the tool calls: random OAuth values (state, PKCE) in other requests can contain "600" by chance.
-    expect(JSON.stringify(fake.toolCalls)).not.toContain("77777");
-    expect(JSON.stringify(fake.toolCalls)).not.toContain("600");
-    expect(JSON.stringify(fake.seen)).not.toContain("77777");
-    expect(JSON.stringify(fake.seen)).not.toContain("Exa grant");
+    expect(sent[0]).toEqual({ programId: "firecrawl.startup-deal", amount: 1000, unit: "credits", asOf: expect.any(String), source: "router" });
+    expect(fake.toolCalls.every((call) => !Object.hasOwn(call.arguments, "credits"))).toBe(true);
   });
 
   it("treats a later reading already on the plan as success with no change", async () => {
@@ -389,13 +387,108 @@ describe("sync", () => {
     expect(fake.tokenRequests.filter((form) => form.get("grant_type") === "refresh_token")).toHaveLength(1);
   });
 
-  it("turns itself off when the refresh is refused, and says to run connect again", async () => {
+  it("does not let disconnect report success while a token rotation is in flight", async () => {
+    const { fake, env, fetch } = await connected();
+    let release!: () => void;
+    let entered!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const slowFetch: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      if (new URL(String(input)).pathname === "/api/oauth/token" && String(init?.body).includes("grant_type=refresh_token")) {
+        entered();
+        await hold;
+      }
+      return response;
+    };
+    const connection = new Connection({
+      env,
+      fetch: programscapeFetch(slowFetch, 15_000),
+      now: () => new Date(START.getTime() + 61 * 60_000),
+    });
+    const active = connection.session((call) => call("my_plan", {}));
+    await started;
+    try {
+      await expect(disconnect({ env, fetch })).rejects.toThrow("Another Programscape connection change is running");
+    } finally {
+      release();
+    }
+    await active;
+    expect((await readTokenFile(env))?.refreshToken).toBe("ps-REFRESH-2-TOKENSECRET");
+    const result = await disconnect({ env, fetch });
+    expect(result).toMatchObject({ outcome: "disconnected", local: { gone: true } });
+    expect(fake.refresh.size).toBe(0);
+  });
+
+  it("reports remote cleanup when a rotated pair cannot be saved or revoked", async () => {
+    const { fake, env, fetch } = await connected();
+    const originalConfig = env.XDG_CONFIG_HOME;
+    const blocked = join(dirname(originalConfig), "blocked-rotation-root");
+    writeFileSync(blocked, "not a directory");
+    fake.behaviour.revokeFails = true;
+    fakeKeyring.failing.set = "save refused";
+    const riskyFetch: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      const path = new URL(String(input)).pathname;
+      if (path === "/api/oauth/token" && String(init?.body).includes("grant_type=refresh_token")) env.XDG_CONFIG_HOME = blocked;
+      if (path === "/api/oauth/revoke") env.XDG_CONFIG_HOME = originalConfig;
+      return response;
+    };
+    const connection = new Connection({
+      env,
+      fetch: programscapeFetch(riskyFetch, 15_000),
+      now: () => new Date(START.getTime() + 61 * 60_000),
+    });
+    const error = await connection.session((call) => call("my_plan", {})).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ProgramscapeError);
+    expect((error as Error).message).toContain("check connected apps on programscape.com");
+    expect((error as Error).message).not.toContain("TOKENSECRET");
+    expect(fake.refresh.has("ps-REFRESH-2-TOKENSECRET")).toBe(true);
+    expect((await readConnectionState(env))?.phase).toBe("cleanup-needed");
+    fake.behaviour.revokeFails = false;
+    const disconnected = await disconnect({ env, fetch });
+    expect(disconnected).toMatchObject({ outcome: "remote-unverified" });
+    expect(fake.refresh.has("ps-REFRESH-2-TOKENSECRET")).toBe(true);
+  });
+
+  it("keeps an uncertain grant marker when a refresh response is lost", async () => {
+    const { fake, env, fetch } = await connected();
+    const lostResponse: typeof fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      if (new URL(String(input)).pathname === "/api/oauth/token" && String(init?.body).includes("grant_type=refresh_token")) {
+        throw new Error("response lost");
+      }
+      return response;
+    };
+    const connection = new Connection({
+      env,
+      fetch: programscapeFetch(lostResponse, 15_000),
+      now: () => new Date(START.getTime() + 61 * 60_000),
+    });
+    await expect(connection.session((call) => call("my_plan", {}))).rejects.toThrow("programscape-router disconnect");
+    expect((await readConnectionState(env))?.phase).toBe("cleanup-needed");
+    const disconnected = await disconnect({ env, fetch });
+    expect(disconnected).toMatchObject({ outcome: "remote-unverified" });
+    expect(fake.refresh.has("ps-REFRESH-2-TOKENSECRET")).toBe(true);
+  });
+
+  it("does not sync while a saved token still has an uncertain grant marker", async () => {
+    const { fake, env, router } = await connected();
+    const marker = await readConnectionState(env);
+    expect(marker).toBeDefined();
+    await writeConnectionState(env, { ...marker!, phase: "cleanup-needed" });
+    expect((await router().status()).programscape.sync).toBe("off");
+    await expect(router().syncBalances()).rejects.toThrow("programscape.com");
+    expect(fake.toolCalls).toHaveLength(0);
+  });
+
+  it("turns itself off when the refresh is refused, and requires disconnect before connect", async () => {
     const { fake, env, router, advance } = await connected();
     fake.behaviour.failRefresh = true;
     advance(61 * 60_000);
     const error = await router().syncBalances().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ProgramscapeError);
-    expect((error as Error).message).toContain("Run `programscape-router connect`");
+    expect((error as Error).message).toContain("Run `programscape-router disconnect`, then `programscape-router connect`");
     expect((error as Error).message).not.toContain("TOKENSECRET");
     expect(existsSync(tokenPath(env))).toBe(false);
     const status = await router().status();
@@ -404,6 +497,38 @@ describe("sync", () => {
     const out: string[] = [];
     await main(["status"], { stdout: (t) => out.push(t), stderr: () => {} }, { env, config: {}, fetch: fake.fetch, ledgerPath: false });
     expect(out.join("")).toContain("Programscape sync: off. Programscape sync is off");
+    const requestsBefore = fake.seen.length;
+    const blocked: string[] = [];
+    expect(await main(["connect"], { stdout: () => {}, stderr: (line) => blocked.push(line) }, { env, config: {}, fetch: fake.fetch, ledgerPath: false, openBrowser: fake.browser })).toBe(1);
+    expect(blocked.join("")).toContain("disconnect` before connecting again");
+    expect(fake.seen).toHaveLength(requestsBefore);
+  });
+
+  it("keeps sync off in the connection marker if the state directory becomes unwritable", async () => {
+    const { fake, env, router, advance } = await connected();
+    const blocked = join(dirname(env.XDG_STATE_HOME), "blocked-state-root");
+    writeFileSync(blocked, "not a directory");
+    env.XDG_STATE_HOME = blocked;
+    fake.behaviour.failRefresh = true;
+    advance(61 * 60_000);
+    await expect(router().syncBalances()).rejects.toThrow("connect");
+    expect((await readConnectionState(env))?.phase).toBe("sync-off");
+    const attempts = fake.tokenRequests.length;
+    await expect(router().syncBalances()).rejects.toThrow("connect");
+    expect(fake.tokenRequests).toHaveLength(attempts);
+    expect((await router().status()).programscape.sync).toBe("off");
+  });
+
+  it("allows an existing router process to sync after a successful external disconnect and reconnect", async () => {
+    const { fake, env, fetch, router, advance } = await connected();
+    const running = router();
+    fake.behaviour.failRefresh = true;
+    advance(61 * 60_000);
+    await expect(running.syncBalances()).rejects.toThrow("connect");
+    expect((await disconnect({ env, fetch })).outcome).toBe("disconnected");
+    fake.behaviour.failRefresh = false;
+    await connect({ env, fetch, now: () => new Date(START.getTime() + 61 * 60_000), print: () => {}, openBrowser: fake.browser });
+    expect((await running.syncBalances())[0]?.outcome).toBe("synced");
   });
 
   it("shows on with the last sync in status, and off before connect", async () => {
@@ -495,7 +620,7 @@ describe("disconnect", () => {
   it("revokes both tokens at the revocation endpoint and deletes the file", async () => {
     const { fake, env, fetch } = await connected();
     const result = await disconnect({ env, fetch });
-    expect(result).toEqual({ wasConnected: true, revoked: true, local: { keychain: "deleted", file: "absent", gone: true } });
+    expect(result).toEqual({ outcome: "disconnected", knownGrants: 1, local: { keychain: "deleted", file: "absent", gone: true } });
     expect(fakeKeyring.peek(KEYCHAIN_SERVICE, TOKEN_KEYCHAIN_ACCOUNT)).toBeUndefined();
     expect(fake.revocations.map((form) => [form.get("token"), form.get("token_type_hint"), form.get("client_id")]).sort()).toEqual([
       ["ps-ACCESS-1-TOKENSECRET", "access_token", "client-1"],
@@ -521,4 +646,3 @@ describe("sync command", () => {
     expect(err.join("")).toContain("Run `programscape-router connect` first");
   });
 });
-

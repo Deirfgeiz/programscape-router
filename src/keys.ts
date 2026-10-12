@@ -110,13 +110,13 @@ function storeLabel(platform: NodeJS.Platform): string {
  */
 export function classifyKeychainError(error: unknown, platform: NodeJS.Platform): KeychainProblem {
   const text = error instanceof Error ? `${error.message} ${(error as { code?: unknown }).code ?? ""}` : String(error);
-  if (/secret ?service|dbus|d-bus|org\.freedesktop/i.test(text)) return "no-secret-service";
-  if (/default keychain/i.test(text)) return "no-default-keychain";
   if (/locked/i.test(text)) return "locked";
   if (/denied|not allowed|cancel|permission|unauthori[sz]ed/i.test(text)) return "access-denied";
+  if (/default keychain/i.test(text)) return "no-default-keychain";
+  if (/serviceunknown|namehasnoowner|no secret ?service|secret ?service provider is not running|not provided by any \.service files/i.test(text)) return "no-secret-service";
   if (/too (long|large|big)|longer than|size|length|limit/i.test(text)) return "too-large";
-  // On Linux an unrecognised failure almost always means no Secret Service is running.
-  return platform === "linux" ? "no-secret-service" : "failed";
+  // An unrecognised Linux read error may be a temporary failure with an existing entry: do not call it absent.
+  return "failed";
 }
 
 const PROBLEM_WORDS: Record<KeychainProblem, string> = {

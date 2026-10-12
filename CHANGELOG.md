@@ -27,14 +27,26 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
   over the keychain. Linux is pinned to the Secret Service (never the kernel keyring, which forgets keys at logout).
   Where there is no keychain, the router still works with environment variables, and `keys` says why. `status` and
   `check` show each key's source (`env`, `keychain` or none). `resolveKeys()` does the same for library users.
-- The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Only where there
-  is no keychain, or it refuses the entry, do they go in a token file, and `connect` says which. Every save carries a
-  sequence number and reads take the newest copy across both stores; a fallback write deletes the older keychain
-  copy, and a later keychain write deletes the file, so a rotated-out refresh token is never reused.
-- `disconnect` reports the remote revocation, the keychain and the token file separately, reads both stores back,
-  and exits 1 unless the tokens are revoked and gone everywhere, naming what is left and how to delete it by hand
-  (Keychain Access, Credential Manager or Secret Service entry names, and the matching `security`, `cmdkey` or
-  `secret-tool` command).
+- The Programscape sign-in tokens are stored in the OS keychain too (account `programscape-token`). Where the keychain
+  module or backend is absent, or a readable keychain refuses to save, they go in a token file, and `connect` says
+  which. A loaded but unreadable keychain blocks a new `connect` until it can be checked. A fallback file is
+  authoritative while present, including when a keychain read and write both fail during rotation. A later keychain
+  write updates the file first and then deletes it after the keychain save, except when the keychain holds a distinct
+  older pair that `disconnect` still needs to revoke.
+- `connect` requires `disconnect` before another sign-in. A nonsecret connection marker keeps this rule in force
+  even during a temporary keychain outage; it also records whether this grant could have used the keychain, so a
+  file-only connection can still be disconnected when no keychain backend exists. The marker has one lifecycle
+  state: awaiting-consent, connected, sync-off, or cleanup-needed; no marker means disconnected. A pending browser
+  sign-in is canceled by `disconnect`, and a second `connect` cannot start while it waits. Connect, disconnect and
+  refresh rotations use per-attempt lock entries; the browser wait holds none, and entries from dead processes are
+  ignored. A refused refresh turns sync off but retains the old pair for `disconnect` to revoke. A token response
+  or rollback that cannot be verified leads `disconnect` to clear local state and warn the founder to check
+  connected apps on programscape.com before another sign-in.
+- `disconnect` blocks later automatic sync attempts when local state can be saved (an in-flight call may finish),
+  revokes every readable token pair, reports remote revocation and both local stores separately, and reads both
+  stores back. It exits 1 if local removal cannot be verified, 2 if local state was cleared but remote access is
+  unverified, or 0 after verified cleanup. It names the entry to inspect in an inaccessible keychain and directs
+  the founder to repair the store and rerun `disconnect`; no internal router file deletion is required.
 - Keychain errors never carry the native library's text: each operation prints a fixed message and a problem class
   (`no-secret-service`, `no-default-keychain`, `locked`, `access-denied`, `too-large`, `failed`). Redaction of keys
   and tokens in routing messages and `check --verbose` now covers secrets of any length.

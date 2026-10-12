@@ -41,9 +41,9 @@ Usage:
   programscape-router status [--json] [--refresh]
   programscape-router search "<query>" [--max N] [--json]
   programscape-router scrape <url> [--json]
-  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan
+  programscape-router connect [--no-browser]     Opt in: sync balance numbers to your Programscape plan (disconnect first to reconnect)
   programscape-router sync [--json]              Send live balances to your plan now
-  programscape-router disconnect                 Revoke the connection and delete the token file
+  programscape-router disconnect                 Revoke the connection and remove local tokens
   programscape-router --help | --version
 
 Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, PARALLEL_API_KEY and TAVILY_API_KEY,
@@ -92,8 +92,8 @@ async function runConnect(args: string[], io: CliIo, options: CliOptions): Promi
         ? `Connected to Programscape. The sign-in token is stored in ${result.stored.label}.\n`
         : `Connected to Programscape. The sign-in token is stored at ${result.stored.path} (${
             process.platform === "win32"
-              ? "no keychain was available; the file is protected by your Windows profile folder's default permissions"
-              : "no keychain was available; the file is readable only by you"
+              ? "the keychain could not store it; the file is protected by your Windows profile folder's default permissions"
+              : "the keychain could not store it; the file is readable only by you"
           }).\n`,
     );
     const config = options.config ?? loadConfig(env, options.cwd).config;
@@ -163,31 +163,32 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
   if (command === "disconnect") {
     const result = await disconnect({ env, fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)) });
     const { local } = result;
-    if (!result.wasConnected && local.gone) {
+    if (result.outcome === "nothing-to-do") {
       io.stdout("Programscape sync was not connected. Nothing to do.\n");
       return 0;
     }
-    const words = { deleted: "deleted", absent: "none there", failed: "COULD NOT DELETE", unavailable: "no keychain here" } as const;
+    const words = { deleted: "deleted", absent: "none there", failed: "COULD NOT DELETE", unavailable: "COULD NOT CHECK" } as const;
     io.stdout(
       [
         "Disconnect from Programscape:",
-        `  Programscape: ${result.revoked ? "revoked the router's access" : "could not confirm the revocation"}`,
+        `  Programscape: ${result.outcome === "disconnected" ? "revoked the known router tokens" : "remote access not fully verified"}`,
         `  OS keychain: ${words[local.keychain]}`,
         `  token file: ${words[local.file]}`,
         "",
       ].join("\n"),
     );
-    if (!local.gone) {
-      io.stderr(`A sign-in token is still stored on this machine. Remove it by hand:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+    if (result.outcome === "local-incomplete") {
+      io.stderr(`Could not verify local token removal. Unlock or repair the reported store, then rerun \`programscape-router disconnect\`:\n${(local.manual ?? []).map((line) => `  ${line}`).join("\n")}\n`);
+      io.stderr("Check programscape.com → My plans → connected apps for any router access as well.\n");
+      return 1;
     }
-    if (!result.revoked && result.wasConnected) {
-      io.stderr("Programscape did not confirm the revocation: remove the router's access on programscape.com as well.\n");
+    if (result.outcome === "remote-unverified") {
+      io.stdout("Local connection cleared; remote access was not verified. You can connect again.\n");
+      io.stderr("Check programscape.com → My plans → connected apps and remove programscape-router if it is listed.\n");
+      return 2;
     }
-    if (local.gone && (result.revoked || !result.wasConnected)) {
-      io.stdout("Disconnected: no token is left on this machine, and Programscape revoked it.\n");
-      return 0;
-    }
-    return 1;
+    io.stdout("Disconnected: local tokens removed and known Programscape tokens revoked.\n");
+    return 0;
   }
 
   const {

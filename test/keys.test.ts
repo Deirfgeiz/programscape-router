@@ -385,9 +385,10 @@ describe("short secrets in native errors", () => {
     expect(classifyKeychainError(new Error("A default keychain could not be found."), "darwin")).toBe("no-default-keychain");
     expect(classifyKeychainError(new Error("The user name or passphrase you entered is not correct; locked"), "darwin")).toBe("locked");
     expect(classifyKeychainError(new Error("org.freedesktop.DBus.Error.ServiceUnknown"), "linux")).toBe("no-secret-service");
-    expect(classifyKeychainError(new Error("anything else"), "linux")).toBe("no-secret-service");
+    expect(classifyKeychainError(new Error("org.freedesktop.DBus.Error.AccessDenied"), "linux")).toBe("access-denied");
+    expect(classifyKeychainError(new Error("org.freedesktop.Secret.Error.IsLocked"), "linux")).toBe("locked");
+    expect(classifyKeychainError(new Error("anything else"), "linux")).toBe("failed");
     expect(classifyKeychainError(new Error("Attribute 'password' is longer than platform limit of 2560 chars"), "win32")).toBe("too-large");
     expect(classifyKeychainError(new Error("anything else"), "win32")).toBe("failed");
   });
 });
-

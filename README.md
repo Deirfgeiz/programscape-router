@@ -236,10 +236,16 @@ claude mcp add programscape-router -s user -- cmd /c npx -y programscape-router
 With 1Password instead of the keychain, run the router through `op run`. Use the full path to your `keys.env`;
 1Password asks you to approve when Claude Code starts the router.
 
-macOS and Linux (`~` isn't expanded here):
+macOS (`~` isn't expanded here):
 
 ```bash
 claude mcp add programscape-router -s user -- op run --env-file=/Users/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
+```
+
+Linux (`~` isn't expanded here):
+
+```bash
+claude mcp add programscape-router -s user -- op run --env-file=/home/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
 ```
 
 Windows:
@@ -284,8 +290,9 @@ On Windows, if the client says it can't start `npx`, start it through `cmd`:
 }
 ```
 
-With 1Password, run it through `op run`. On Windows, use your Windows path to `keys.env`, with each backslash
-doubled in JSON: `"--env-file=C:\\\\Users\\\\YOU\\\\AppData\\\\Roaming\\\\programscape-router\\\\keys.env"`.
+With 1Password, run it through `op run`. Use the path for your OS:
+
+macOS:
 
 ```json
 {
@@ -293,6 +300,32 @@ doubled in JSON: `"--env-file=C:\\\\Users\\\\YOU\\\\AppData\\\\Roaming\\\\progra
     "programscape-router": {
       "command": "op",
       "args": ["run", "--env-file=/Users/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
+    }
+  }
+}
+```
+
+Linux:
+
+```json
+{
+  "mcpServers": {
+    "programscape-router": {
+      "command": "op",
+      "args": ["run", "--env-file=/home/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
+    }
+  }
+}
+```
+
+Windows (JSON requires each path backslash to be doubled):
+
+```json
+{
+  "mcpServers": {
+    "programscape-router": {
+      "command": "op",
+      "args": ["run", "--env-file=C:\\Users\\YOU\\AppData\\Roaming\\programscape-router\\keys.env", "--", "npx", "-y", "programscape-router"]
     }
   }
 }
@@ -448,10 +481,23 @@ npx programscape-router disconnect   # revokes the router's access and deletes t
 `connect` prints the sign-in link too, so it works on a machine without a browser (`--no-browser` skips opening
 one). It listens on `127.0.0.1` only for the redirect, so no firewall asks to open a port.
 
+To connect again, run `programscape-router disconnect` first, including when an old sign-in has expired. A second
+`connect` stops before contacting Programscape while a token or connection record remains, even if the keychain
+temporarily cannot be reached. The record contains no token or personal data. It has one lifecycle state:
+`awaiting-consent` (the browser sign-in is pending), `connected`, `sync-off` (the sign-in was refused), or
+`cleanup-needed` (a change was interrupted or its remote result is uncertain); it also records whether the keychain
+may hold a grant. No record means `disconnected`. Connect, disconnect and token refreshes use local lock entries
+around connection changes. The lock is released while `connect` waits for the browser, but the pending attempt
+stays recorded. Running `disconnect` then cancels that attempt. Ctrl+C and other termination signals remove a held
+entry where possible; a later command ignores an entry whose process has died. An incomplete entry without an
+owner expires after two minutes.
+
 The tokens go in your OS keychain, beside your provider keys (service `programscape-router`, account
-`programscape-token`), and `connect` says so. Only where there is no keychain, or it refuses the entry (for example a
-locked keychain, or an entry too large for Windows Credential Manager), does the router write a token file instead,
-and `connect` names it:
+`programscape-token`), and `connect` says so. If the optional keychain module is missing, no keychain backend exists,
+or the keychain can be checked but refuses to save the entry (for example, an entry too large for Windows Credential
+Manager), the router writes a token file instead. If a loaded keychain cannot be checked, `connect` stops and asks
+you to unlock or repair it before trying again; it cannot safely rule out an older grant. `connect` names the store
+used:
 
 - macOS and Linux: `~/.config/programscape-router/programscape-token.json` (or under `$XDG_CONFIG_HOME`), mode 600
   in a mode 700 folder, so only your user account can read it.
@@ -459,26 +505,37 @@ and `connect` names it:
   protected only by your profile folder's default permissions, which let your account, administrators and the
   system read it.
 
-Every save is numbered, and the router always uses the newest copy. When it falls back to the file, it deletes the
-older keychain copy; when the keychain works again, it deletes the file. So a token Programscape has already replaced
-is never used again, even if one store briefly can't be written.
+While a fallback file exists, the router reads that copy. It tries to delete the old keychain entry after a fallback
+write. When the keychain works again, it updates the fallback file before saving there and then deletes the file,
+unless the keychain still holds a different token pair. In that case it keeps both copies so `disconnect` can revoke
+both. This keeps a rotated token current even if a keychain read or write fails. If Programscape refuses a refresh, sync
+turns off and keeps the old token pair locally so `disconnect` can attempt to revoke it before another sign-in.
 
 If Programscape stops accepting the tokens (for example after 30 days without use, or if you remove the router's
-access on programscape.com), sync turns itself off and says to run `connect` again.
+access on programscape.com), sync turns itself off. Run `disconnect`, then `connect` to sign in again.
 
-`disconnect` asks Programscape to revoke both tokens, deletes them from the keychain and the file, then reads both
-back. It prints what happened in each place:
+`disconnect` blocks later automatic balance sync attempts when it can save local state; a call already in progress may
+finish. It asks Programscape to revoke every readable token pair in the keychain and file, deletes the local copies,
+then reads both stores back. It prints what happened in each place:
 
 ```text
 Disconnect from Programscape:
-  Programscape: revoked the router's access
+  Programscape: revoked the known router tokens
   OS keychain: deleted
   token file: none there
-Disconnected: no token is left on this machine, and Programscape revoked it.
+Disconnected: local tokens removed and known Programscape tokens revoked.
 ```
 
-It exits 0 only when the tokens are revoked and gone from both stores. Otherwise it exits 1 and says what is left and
-how to remove it by hand:
+It exits 0 when the known tokens were revoked and every store this connection could have used is verified empty. A
+file-only connection made without a keychain backend can disconnect successfully without one: its nonsecret record
+shows that it never attempted a keychain write. If local removal cannot be verified, `disconnect` exits 1; unlock
+or repair the reported store and rerun `disconnect`. If local tokens are gone but remote revocation cannot be
+verified, it clears the local connection, exits 2, and asks you to check
+`programscape.com → My plans → connected apps` for `programscape-router`. You may then connect again. A token response
+lost during sign-in or refresh can leave an unknown remote grant; `disconnect` also clears local state and gives
+the same warning. Removing the router in connected apps is the way to revoke an unknown grant.
+
+If a local token cannot be removed, `disconnect` names the store and its entry so you can inspect it:
 
 - macOS: in Keychain Access, delete the item `programscape-router` with account `programscape-token`, or run
   `security delete-generic-password -s programscape-router -a programscape-token`.
@@ -487,6 +544,9 @@ how to remove it by hand:
 - Linux: in Seahorse or KWallet Manager, delete the item for service `programscape-router`, username
   `programscape-token`, or run `secret-tool clear service programscape-router username programscape-token`.
 - If Programscape didn't confirm the revocation, also remove the router's access on programscape.com.
+
+If a token entry is corrupted, `disconnect` may remove it locally but cannot revoke a grant it cannot read. It
+reports the remote result as unverified and points you to connected apps. You do not need to edit router files.
 
 ### Which program a balance goes to
 

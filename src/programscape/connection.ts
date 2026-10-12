@@ -1,28 +1,33 @@
 /**
  * A signed-in MCP session with Programscape: Streamable HTTP with `Authorization: Bearer <token>`, refreshing the
  * token when it is about to end (or Programscape answers 401), and storing the rotated refresh token.
- * When Programscape refuses the refresh, the token file is deleted and sync is off until `connect` runs again.
+ * When Programscape refuses the refresh, sync turns off and the old pair stays available for `disconnect` to revoke.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { VERSION } from "../version.js";
 import { PROGRAMSCAPE_MCP_URL, ProgramscapeError } from "./guard.js";
-import { type GuardedFetch, discover, refresh } from "./oauth.js";
-import { type TokenFile, deleteTokenFile, readTokenFile, writeTokenFile } from "./store.js";
+import { type GuardedFetch, discover, refresh, revoke } from "./oauth.js";
+import { type TokenFile, ConnectionLockError, readConnectionState, readTokenFile, transitionConnection, withConnectionLock, writeTokenFile } from "./store.js";
 
 /** Refresh this long before the access token's end, so a call never starts with a token about to lapse. */
 const REFRESH_MARGIN_MS = 60_000;
 
 export const RECONNECT_MESSAGE =
   "Programscape sync is off: Programscape no longer accepts this router's sign-in (it expired or was revoked). " +
-  "Run `programscape-router connect` to turn it back on.";
+  "Run `programscape-router disconnect`, then `programscape-router connect` to sign in again.";
+
+export const REMOTE_UNCERTAIN_MESSAGE =
+  "Programscape may have issued tokens that the router could not save. Run `programscape-router disconnect`; it clears local state and tells you how to check connected apps on programscape.com.";
+
+function sameGrant(a: TokenFile | undefined, b: TokenFile): boolean {
+  return a?.clientId === b.clientId && a.accessToken === b.accessToken && a.refreshToken === b.refreshToken;
+}
 
 export interface ConnectionOptions {
   env: NodeJS.ProcessEnv;
   fetch: GuardedFetch;
   now: () => Date;
-  /** Called once when Programscape refuses the refresh, after the token file is deleted. */
-  onRejected: () => Promise<void>;
 }
 
 export type CallTool = (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -65,39 +70,88 @@ export class Connection {
   private async accessToken(force: boolean): Promise<string> {
     const { env, now } = this.options;
     const stored = await readTokenFile(env);
+    const state = await readConnectionState(env);
+    if (state?.phase === "cleanup-needed") throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
+    if (state?.phase === "sync-off") throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
     if (!stored) throw new ProgramscapeError("rejected", "Programscape sync is not connected. Run `programscape-router connect`.");
-    // Another process may have rotated the tokens since this one read them: the file is the truth.
+    if (state?.phase !== "connected") throw new ProgramscapeError("refused", "Programscape connection state needs repair. Run `programscape-router disconnect`.");
+    // Another process may have rotated the tokens: reread the authoritative file, or the keychain if there is no file.
     this.tokens = stored;
     const endsAt = stored.expiresAt ? Date.parse(stored.expiresAt) : Number.NaN;
     const fresh = Number.isNaN(endsAt) || endsAt - now().getTime() > REFRESH_MARGIN_MS;
     if (fresh && !force) return stored.accessToken;
-    if (!stored.refreshToken) return this.reject();
-
-    const metadata = await discover(this.options.fetch);
-    let next;
     try {
-      next = await refresh(this.options.fetch, metadata, { clientId: stored.clientId, refreshToken: stored.refreshToken });
+      return await withConnectionLock(env, async () => {
+        const current = await readTokenFile(env);
+        const state = await readConnectionState(env);
+        if (state?.phase === "cleanup-needed") throw new ProgramscapeError("refused", REMOTE_UNCERTAIN_MESSAGE);
+        if (!current || state?.phase !== "connected") throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
+        const currentEndsAt = current.expiresAt ? Date.parse(current.expiresAt) : Number.NaN;
+        if (!sameGrant(current, stored) && (Number.isNaN(currentEndsAt) || currentEndsAt - now().getTime() > REFRESH_MARGIN_MS)) {
+          this.tokens = current;
+          return current.accessToken;
+        }
+        if (!current.refreshToken) return this.rejectUnlocked(current);
+        const metadata = await discover(this.options.fetch);
+        await transitionConnection(env, "begin-refresh");
+        let next;
+        try {
+          next = await refresh(this.options.fetch, metadata, { clientId: current.clientId, refreshToken: current.refreshToken });
+        } catch (error) {
+          if (error instanceof ProgramscapeError && error.kind === "rejected") {
+            await transitionConnection(env, "refresh-refused");
+            return this.rejectUnlocked(current);
+          }
+          throw new ProgramscapeError("unreachable", "Could not confirm whether Programscape issued rotated tokens. Run `programscape-router disconnect`; it will clear local state and tell you how to check remote access.");
+        }
+        const updated: TokenFile = {
+          ...current,
+          accessToken: next.accessToken,
+          ...(next.refreshToken ? { refreshToken: next.refreshToken } : {}),
+          ...(next.expiresIn !== undefined ? { expiresAt: new Date(now().getTime() + next.expiresIn * 1000).toISOString() } : {}),
+        };
+        if (next.expiresIn === undefined) delete updated.expiresAt;
+        try {
+          await writeTokenFile(env, updated);
+          await transitionConnection(env, "refresh-succeeded");
+        } catch {
+          const rollback = await Promise.allSettled([
+            ...(next.refreshToken ? [revoke(this.options.fetch, metadata, { clientId: current.clientId, token: next.refreshToken, hint: "refresh_token" })] : []),
+            revoke(this.options.fetch, metadata, { clientId: current.clientId, token: next.accessToken, hint: "access_token" }),
+          ]);
+          const revoked = rollback.every((result) => result.status === "fulfilled" && result.value);
+          if (revoked) await transitionConnection(env, "refresh-refused").catch(() => undefined);
+          throw new ProgramscapeError("refused", `Could not save Programscape's rotated tokens. ${revoked ? "The new tokens were revoked." : "The new tokens could not be confirmed revoked."} Run \`programscape-router disconnect\`${revoked ? "." : " and check connected apps on programscape.com."}`);
+        }
+        this.tokens = updated;
+        return updated.accessToken;
+      });
     } catch (error) {
-      if (error instanceof ProgramscapeError && error.kind === "rejected") return this.reject();
+      if (error instanceof ConnectionLockError) throw new ProgramscapeError("refused", error.message);
       throw error;
     }
-    const updated: TokenFile = {
-      ...stored,
-      accessToken: next.accessToken,
-      // Refresh tokens rotate; keep the old one only if Programscape didn't send a new one.
-      ...(next.refreshToken ? { refreshToken: next.refreshToken } : {}),
-      ...(next.expiresIn !== undefined ? { expiresAt: new Date(now().getTime() + next.expiresIn * 1000).toISOString() } : {}),
-    };
-    if (next.expiresIn === undefined) delete updated.expiresAt;
-    await writeTokenFile(env, updated);
-    this.tokens = updated;
-    return updated.accessToken;
   }
 
-  private async reject(): Promise<never> {
-    await deleteTokenFile(this.options.env);
+  private async rejectUnlocked(expected: TokenFile): Promise<never> {
+    const current = await readTokenFile(this.options.env);
+    const state = await readConnectionState(this.options.env);
+    if (sameGrant(current, expected) && state?.phase === "connected") {
+      await transitionConnection(this.options.env, "begin-refresh");
+      await transitionConnection(this.options.env, "refresh-refused");
+    }
     this.tokens = undefined;
-    await this.options.onRejected();
+    throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
+  }
+
+  private async reject(expected: TokenFile | undefined = this.tokens): Promise<never> {
+    try {
+      await withConnectionLock(this.options.env, async () => {
+        if (expected) await this.rejectUnlocked(expected);
+      });
+    } catch (error) {
+      if (!(error instanceof ConnectionLockError)) throw error;
+    }
+    this.tokens = undefined;
     throw new ProgramscapeError("rejected", RECONNECT_MESSAGE);
   }
 
