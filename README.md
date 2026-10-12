@@ -50,16 +50,16 @@ The router can keep each key in your operating system's own password store: the 
 Manager, or the Secret Service (GNOME Keyring or KWallet) on Linux. It works the same on every system:
 
 ```bash
-npx programscape-router keys set tavily      # paste the key at the prompt; nothing is shown as you paste
-npx programscape-router keys set firecrawl
-npx programscape-router keys list            # which keys are set and where from; never the keys themselves
+npx @programscape/router keys set tavily      # paste the key at the prompt; nothing is shown as you paste
+npx @programscape/router keys set firecrawl
+npx @programscape/router keys list            # which keys are set and where from; never the keys themselves
 ```
 
 Providers are `exa`, `firecrawl`, `keenable`, `parallel` and `tavily`. That's all: the router finds the keys
 itself, so your agent's config holds none (see [Add it to your agent](#add-it-to-your-agent)).
 `keys remove tavily` deletes one. Keys are stored under service `programscape-router`, with the variable name
 (such as `TAVILY_API_KEY`) as the account, so you can also find them in Keychain Access, Credential Manager (as
-`TAVILY_API_KEY.programscape-router`) or Seahorse. To store a key from a script, pipe it in: `... | npx programscape-router keys set
+`TAVILY_API_KEY.programscape-router`) or Seahorse. To store a key from a script, pipe it in: `... | npx @programscape/router keys set
 tavily --stdin`.
 
 - An environment variable always wins over the keychain, so `op run` (below) and CI keep working.
@@ -90,13 +90,13 @@ tavily --stdin`.
    macOS and Linux:
 
    ```bash
-   op run --env-file="$HOME/.config/programscape-router/keys.env" -- npx programscape-router check
+   op run --env-file="$HOME/.config/programscape-router/keys.env" -- npx @programscape/router check
    ```
 
    Windows (PowerShell):
 
    ```powershell
-   op run --env-file="$env:APPDATA\programscape-router\keys.env" -- npx programscape-router check
+   op run --env-file="$env:APPDATA\programscape-router\keys.env" -- npx @programscape/router check
    ```
 
 To add it to your agent this way, see [Add it to your agent](#add-it-to-your-agent).
@@ -104,8 +104,8 @@ To add it to your agent this way, see [Add it to your agent](#add-it-to-your-age
 ### With another password manager
 
 Most managers have a command that works like `op run`: it starts a program with your keys in its environment and
-nowhere else. For example `bws run -- npx programscape-router check` (Bitwarden Secrets Manager),
-`doppler run -- npx programscape-router check` (Doppler) or `infisical run -- npx programscape-router check`
+nowhere else. For example `bws run -- npx @programscape/router check` (Bitwarden Secrets Manager),
+`doppler run -- npx @programscape/router check` (Doppler) or `infisical run -- npx @programscape/router check`
 (Infisical). Name each secret after its variable, such as `TAVILY_API_KEY`.
 
 ### Just for one terminal window
@@ -144,12 +144,15 @@ Repeat for each key, then run the router in the same window.
 
 ## Install
 
+The npm package is `@programscape/router`. Run it with `npx @programscape/router <command>`; if you install it
+(`npm install -g @programscape/router`), the command it adds is `programscape-router`.
+
 You need Node 22 or later. On Windows: `winget install OpenJS.NodeJS.LTS`. On macOS and Linux: the LTS installer
 from [nodejs.org](https://nodejs.org), or your package manager.
 
-Once the router is on npm, there is nothing else to install: `npx programscape-router` runs the latest version.
+Once the router is on npm, there is nothing else to install: `npx @programscape/router` runs the latest version.
 Until then, run it from GitHub: use `npx github:Deirfgeiz/programscape-router` wherever this page says
-`npx programscape-router`. It builds itself on install.
+`npx @programscape/router`. It builds itself on install.
 
 The keychain support comes as a small prebuilt native module (`@napi-rs/keyring`) for macOS, Windows and Linux, so
 no compiler is needed. It is an optional dependency: if it can't be installed on your system, or you install with
@@ -162,11 +165,11 @@ Store your keys (see [Keep your keys safe](#keep-your-keys-safe)), then check th
 put `op run --env-file=... --` in front of each command.
 
 ```bash
-npx programscape-router keys set tavily   # once per provider: store the key in your OS keychain
-npx programscape-router check             # one live search, scrape and balance read per key, each provider on its own
-npx programscape-router status            # enabled providers, the order and why, balances
-npx programscape-router search "seed round SAFE templates"
-npx programscape-router scrape https://example.com
+npx @programscape/router keys set tavily   # once per provider: store the key in your OS keychain
+npx @programscape/router check             # one live search, scrape and balance read per key, each provider on its own
+npx @programscape/router status            # enabled providers, the order and why, balances
+npx @programscape/router search "seed round SAFE templates"
+npx @programscape/router scrape https://example.com
 ```
 
 `check` makes one small search (`"startup credits"`, up to 3 results) and one scrape (`https://example.com`) with
@@ -223,14 +226,14 @@ With your keys in the OS keychain, the agent's config holds no key at all: the r
 macOS, Linux and Windows:
 
 ```bash
-claude mcp add programscape-router -s user -- npx -y programscape-router
+claude mcp add programscape-router -s user -- npx -y @programscape/router
 ```
 
 `-s user` makes it available in every project. On native Windows, Claude Code 2.1.119 and later start `npx`
 directly. With an older version, wrap it in `cmd /c`:
 
 ```powershell
-claude mcp add programscape-router -s user -- cmd /c npx -y programscape-router
+claude mcp add programscape-router -s user -- cmd /c npx -y @programscape/router
 ```
 
 With 1Password instead of the keychain, run the router through `op run`. Use the full path to your `keys.env`;
@@ -239,26 +242,26 @@ With 1Password instead of the keychain, run the router through `op run`. Use the
 macOS (`~` isn't expanded here):
 
 ```bash
-claude mcp add programscape-router -s user -- op run --env-file=/Users/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
+claude mcp add programscape-router -s user -- op run --env-file=/Users/YOU/.config/programscape-router/keys.env -- npx -y @programscape/router
 ```
 
 Linux (`~` isn't expanded here):
 
 ```bash
-claude mcp add programscape-router -s user -- op run --env-file=/home/YOU/.config/programscape-router/keys.env -- npx -y programscape-router
+claude mcp add programscape-router -s user -- op run --env-file=/home/YOU/.config/programscape-router/keys.env -- npx -y @programscape/router
 ```
 
 Windows:
 
 ```powershell
-claude mcp add programscape-router -s user -- op run --env-file=C:\Users\YOU\AppData\Roaming\programscape-router\keys.env -- npx -y programscape-router
+claude mcp add programscape-router -s user -- op run --env-file=C:\Users\YOU\AppData\Roaming\programscape-router\keys.env -- npx -y @programscape/router
 ```
 
 Without the keychain or a password manager (not recommended: Claude Code saves the keys in plain text in its
 config), pass each key with `-e`:
 
 ```bash
-claude mcp add programscape-router -s user -e TAVILY_API_KEY=tvly-... -e FIRECRAWL_API_KEY=fc-... -- npx -y programscape-router
+claude mcp add programscape-router -s user -e TAVILY_API_KEY=tvly-... -e FIRECRAWL_API_KEY=fc-... -- npx -y @programscape/router
 ```
 
 ### Cursor, Claude Desktop and other MCP clients
@@ -271,7 +274,7 @@ Add a stdio server to the client's MCP config (for Cursor, `~/.cursor/mcp.json`;
   "mcpServers": {
     "programscape-router": {
       "command": "npx",
-      "args": ["-y", "programscape-router"]
+      "args": ["-y", "@programscape/router"]
     }
   }
 }
@@ -284,7 +287,7 @@ On Windows, if the client says it can't start `npx`, start it through `cmd`:
   "mcpServers": {
     "programscape-router": {
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "programscape-router"]
+      "args": ["/c", "npx", "-y", "@programscape/router"]
     }
   }
 }
@@ -299,7 +302,7 @@ macOS:
   "mcpServers": {
     "programscape-router": {
       "command": "op",
-      "args": ["run", "--env-file=/Users/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
+      "args": ["run", "--env-file=/Users/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "@programscape/router"]
     }
   }
 }
@@ -312,7 +315,7 @@ Linux:
   "mcpServers": {
     "programscape-router": {
       "command": "op",
-      "args": ["run", "--env-file=/home/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "programscape-router"]
+      "args": ["run", "--env-file=/home/YOU/.config/programscape-router/keys.env", "--", "npx", "-y", "@programscape/router"]
     }
   }
 }
@@ -325,7 +328,7 @@ Windows (JSON requires each path backslash to be doubled):
   "mcpServers": {
     "programscape-router": {
       "command": "op",
-      "args": ["run", "--env-file=C:\\Users\\YOU\\AppData\\Roaming\\programscape-router\\keys.env", "--", "npx", "-y", "programscape-router"]
+      "args": ["run", "--env-file=C:\\Users\\YOU\\AppData\\Roaming\\programscape-router\\keys.env", "--", "npx", "-y", "@programscape/router"]
     }
   }
 }
@@ -472,10 +475,10 @@ reason, and nothing on your plan changes.
 ### Connect and disconnect
 
 ```bash
-npx programscape-router connect      # opens your browser to sign in to Programscape and allow the router
-npx programscape-router sync         # send live balances to your plan now
-npx programscape-router status       # ends with "Programscape sync: off" or "on (last synced ...)"
-npx programscape-router disconnect   # revokes the router's access and deletes the tokens
+npx @programscape/router connect      # opens your browser to sign in to Programscape and allow the router
+npx @programscape/router sync         # send live balances to your plan now
+npx @programscape/router status       # ends with "Programscape sync: off" or "on (last synced ...)"
+npx @programscape/router disconnect   # revokes the router's access and deletes the tokens
 ```
 
 `connect` prints the sign-in link too, so it works on a machine without a browser (`--no-browser` skips opening
@@ -626,7 +629,7 @@ result or page content (see [Quick check](#quick-check)). Don't paste `check --v
 ## As a library
 
 ```ts
-import { createRouter } from "programscape-router";
+import { createRouter } from "@programscape/router";
 
 const router = createRouter(); // reads keys from process.env and the config file
 const { results, routing } = await router.search({ query: "seed SAFE templates", maxResults: 5 });

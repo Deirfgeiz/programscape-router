@@ -62,10 +62,10 @@ try {
   // 1. ESM import of the public API, with no keys and no network.
   writeFileSync(
     join(app, "esm.mjs"),
-    `import * as api from "programscape-router";
+    `import * as api from "@programscape/router";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const pkg = require("programscape-router/package.json");
+const pkg = require("@programscape/router/package.json");
 if (api.VERSION !== pkg.version) throw new Error("VERSION " + api.VERSION + " != package.json " + pkg.version);
 for (const name of ["createRouter", "runCheck", "formatCheck", "formatStatus", "loadConfig", "parseConfig", "createMcpServer", "runMcpServer"]) {
   if (typeof api[name] !== "function") throw new Error(name + " is not exported as a function");
@@ -79,7 +79,7 @@ if (status.providers.length !== 5) throw new Error("expected five providers");
 const report = await api.runCheck({ env: {} });
 if (report.attempted !== 0 || report.ok) throw new Error("check with no keys should attempt nothing and not pass");
 let blocked = false;
-try { await import("programscape-router/dist/router.js"); } catch (error) { blocked = error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED"; }
+try { await import("@programscape/router/dist/router.js"); } catch (error) { blocked = error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED"; }
 if (!blocked) throw new Error("deep imports should be blocked by exports");
 console.log("esm import ok: " + Object.keys(api).length + " exports, version " + api.VERSION);
 `,
@@ -101,7 +101,7 @@ console.log("esm import ok: " + Object.keys(api).length + " exports, version " +
   createRouter, runCheck, formatCheck, RouterError, ConfigError, ProgramscapeError, VERSION, PROVIDER_IDS,
   type Router, type RouterOptions, type RouterStatus, type SearchResponse, type ScrapeResponse, type CheckReport,
   type CheckCall, type Outcome, type ProviderId, type Balance, type RouterConfig, type SyncResult, type FetchLike,
-} from "programscape-router";
+} from "@programscape/router";
 
 const fetchImpl: FetchLike = (input, init) => fetch(input, init);
 const config: RouterConfig = { order: { search: ["tavily", "exa"] }, providers: { exa: { credits: [{ expiresOn: "2027-03-01", remaining: 1 }] } } };
@@ -129,7 +129,7 @@ export async function use(): Promise<void> {
   // 3. The bin. npm made the shim; the CLI is run through node so this works the same on Windows.
   const shim = join(app, "node_modules", ".bin", process.platform === "win32" ? "programscape-router.cmd" : "programscape-router");
   if (!existsSync(shim)) throw new Error(`npm did not create the bin shim at ${shim}`);
-  const cliPath = join(app, "node_modules", "programscape-router", "dist", "cli.js");
+  const cliPath = join(app, "node_modules", "@programscape", "router", "dist", "cli.js");
   const home = join(work, "home");
   mkdirSync(home);
   // A throwaway home keeps the run away from the developer's own config and ledger. The keychain round trip keeps
@@ -149,7 +149,7 @@ export async function use(): Promise<void> {
   for (const name of ["DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "USER", "LOGNAME", "TMPDIR", "TEMP", "TMP"]) {
     if (process.env[name]) baseEnv[name] = process.env[name];
   }
-  const packageRoot = join(app, "node_modules", "programscape-router");
+  const packageRoot = join(app, "node_modules", "@programscape", "router");
   // The installed package's own CLI, with the keychain service switched to the test one.
   const cli = (args, { env = {}, input } = {}) =>
     spawnSync(process.execPath, [testEntry, packageRoot, TEST_SERVICE, ...args], { cwd: app, env: { ...baseEnv, ...env }, encoding: "utf8", input, timeout: 60_000 });
@@ -188,7 +188,7 @@ function keychainRoundTrip(cli, app) {
     const read = spawnSync(
       process.execPath,
       ["--input-type=module", "-e", `const { AsyncEntry } = await import("@napi-rs/keyring"); process.stdout.write(String(await new AsyncEntry("${TEST_SERVICE}", "EXA_API_KEY").getPassword()));`],
-      { cwd: join(app, "node_modules", "programscape-router"), encoding: "utf8", timeout: 60_000 },
+      { cwd: join(app, "node_modules", "@programscape", "router"), encoding: "utf8", timeout: 60_000 },
     );
     if (read.stdout !== secret) throw new Error(`the keychain did not hold the key (got ${read.stdout.length} chars; ${read.stderr})`);
 

@@ -10,6 +10,9 @@ The first release meant for npm. 0.1.0 was only ever installed from GitHub.
 
 ### Added
 
+- Published to npm as `@programscape/router`, under the Programscape organization. `npx @programscape/router` runs it;
+  installed globally, the command is still `programscape-router`. The keychain service, config and state folders and
+  the MCP server name keep the `programscape-router` name, so keys saved before 1.0 keep working.
 - `programscape-router check [--json] [--verbose]`: one live search (`"startup credits"`, up to 3 results) and one
   scrape (`https://example.com`) per provider with a key set, plus a balance read for Firecrawl and Tavily. Each
   adapter is called directly, with no routing or failover. Per call, the report gives ok or the failure class, the
