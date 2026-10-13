@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ADAPTERS, ProviderCallError } from "../src/providers/index.js";
 import { requestJson } from "../src/providers/http.js";
 import { createRouter } from "../src/router.js";
-import { URLS, fixture, mockFetch, ok, type Responder } from "./helpers.js";
+import { createZone, listZones } from "../src/providers/brightdata.js";
+import { BRIGHTDATA_ZONE_URLS, URLS, brightdata, fixture, mockFetch, ok, type Responder } from "./helpers.js";
 
 const KEY = "secret-redirect-key-123";
 const servers: Server[] = [];
@@ -53,6 +54,10 @@ describe("redirects never carry a key to another host", () => {
 
   it("asks fetch not to follow redirects on every provider call, including balance reads", async () => {
     const { fetch, calls } = mockFetch({
+      [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), ok(fixture("brightdata-scrape"))),
+      [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
+      [BRIGHTDATA_ZONE_URLS.list]: ok(fixture("brightdata-zones")),
+      [BRIGHTDATA_ZONE_URLS.create]: ok({}),
       [URLS.exaSearch]: ok(fixture("exa-search")),
       [URLS.exaContents]: ok(fixture("exa-contents")),
       [URLS.firecrawlSearch]: ok(fixture("firecrawl-search")),
@@ -72,13 +77,16 @@ describe("redirects never carry a key to another host", () => {
       [URLS.youcomContents]: ok(fixture("youcom-contents")),
       [URLS.youcomBalance]: ok(fixture("youcom-balance")),
     });
-    const ctx = { key: KEY, fetch, timeoutMs: 5000 };
+    const ctx = { key: KEY, fetch, timeoutMs: 5000, zones: { search: "programscape_serp", scrape: "web_unlocker1" } };
     for (const adapter of Object.values(ADAPTERS)) {
       await adapter.search!({ query: "q" }, ctx);
       await adapter.scrape!({ url: "https://example.com/" }, ctx);
       await adapter.balance?.(ctx);
     }
-    expect(calls).toHaveLength(18);
+    // Bright Data's zone list and zone creation (keys set brightdata) too.
+    await listZones(ctx);
+    await createZone(ctx, "programscape_serp", "search");
+    expect(calls).toHaveLength(23);
     for (const call of calls) expect(call.redirect).toBe("manual");
   });
 

@@ -6,11 +6,12 @@ import { KEYCHAIN_SERVICE, resolveKeys } from "../src/keys.js";
 import { sanitizeLedger } from "../src/ledger.js";
 import { connect } from "../src/programscape/connect.js";
 import { createRouter } from "../src/router.js";
-import { URLS, fixture, mockFetch, ok, status, type Responder } from "./helpers.js";
+import { BRIGHTDATA_ZONES, URLS, brightdata, fixture, mockFetch, ok, status, type Responder } from "./helpers.js";
 import { ORIGIN, combine, fakeProgramscape } from "./programscape-fake.js";
 import { fakeKeyring } from "./fake-keyring.js";
 
 const KEYS = {
+  BRIGHTDATA_API_KEY: "brd-SECRET-8888",
   EXA_API_KEY: "exa-SECRET-1111",
   FIRECRAWL_API_KEY: "fc-SECRET-2222",
   KEENABLE_API_KEY: "keen_SECRET-3333",
@@ -21,6 +22,7 @@ const KEYS = {
 };
 /** Each provider's own API hosts. You.com uses two: ydc-index.io for search and contents, api.you.com for its balance. */
 const HOSTS: Record<keyof typeof KEYS, string[]> = {
+  BRIGHTDATA_API_KEY: ["api.brightdata.com"],
   EXA_API_KEY: ["api.exa.ai"],
   FIRECRAWL_API_KEY: ["api.firecrawl.dev"],
   KEENABLE_API_KEY: ["api.keenable.ai"],
@@ -43,14 +45,15 @@ function echo(code: number): Responder {
 // Every privacy rule holds whether a key came from the environment or from the OS keychain.
 describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) => {
   /** The environment for this run: the keys themselves only when they come from the environment. */
-  const keyEnv = (extra: Record<string, string> = {}) => ({ ...(source === "env" ? KEYS : {}), ...extra });
+  // Bright Data's zone names are settings, not secrets: always from the environment here.
+  const keyEnv = (extra: Record<string, string> = {}) => ({ ...(source === "env" ? KEYS : {}), ...BRIGHTDATA_ZONES, ...extra });
   beforeEach(() => {
     if (source === "keychain") for (const [name, key] of Object.entries(KEYS)) fakeKeyring.put(KEYCHAIN_SERVICE, name, key);
   });
   async function keyed(extra: Record<string, string> = {}) {
     const env = keyEnv(extra);
     const keys = await resolveKeys({ env });
-    expect(Object.values(keys.sources)).toEqual(Array(7).fill(source));
+    expect(Object.values(keys.sources)).toEqual(Array(8).fill(source));
     return { env, keys };
   }
 
@@ -59,6 +62,8 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     const ledgerPath = join(dir, "ledger.json");
     const logs: string[] = [];
     const { fetch } = mockFetch({
+      [URLS.brightdataRequest]: brightdata(echo(429), echo(502)),
+      [URLS.brightdataBalance]: echo(500),
       [URLS.exaSearch]: echo(402),
       [URLS.firecrawlCredits]: echo(500),
       [URLS.firecrawlSearch]: echo(401),
@@ -103,6 +108,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     const ledger = JSON.parse(ledgerText);
     const day = new Date().toISOString().slice(0, 10);
     expect(ledger.days[day]).toEqual({
+      brightdata: { search: { rate_limited: 1 }, scrape: { server_error: 1 } },
       exa: { search: { exhausted: 1 } },
       firecrawl: { search: { unauthorized: 1 } },
       keenable: { search: { rate_limited: 1 }, scrape: { exhausted: 1 } },
@@ -118,6 +124,8 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
 
   it("sends each key only to its own provider's host, and with the catalog off makes no other network call", async () => {
     const { fetch, calls } = mockFetch({
+      [URLS.brightdataRequest]: status(503),
+      [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
       [URLS.exaSearch]: status(503),
       [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
       [URLS.firecrawlSearch]: status(503),
@@ -152,6 +160,8 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
   it("reads Programscape's public catalog with only the provider ids: no key, query, URL or balance", async () => {
     const root = mkdtempSync(join(tmpdir(), "psr-privacy-catalog-"));
     const { fetch, calls } = mockFetch({
+      [URLS.brightdataRequest]: status(503),
+      [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
       [URLS.exaSearch]: status(503),
       [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
       [URLS.firecrawlSearch]: status(503),
@@ -171,7 +181,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     const toProgramscape = calls.filter((call) => new URL(call.url).origin === ORIGIN);
     expect(toProgramscape).toHaveLength(1);
     const [call] = toProgramscape;
-    expect(call?.url).toBe(`${ORIGIN}/api/router/programs?providers=exa,firecrawl,keenable,linkup,parallel,tavily,youcom`);
+    expect(call?.url).toBe(`${ORIGIN}/api/router/programs?providers=brightdata,exa,firecrawl,keenable,linkup,parallel,tavily,youcom`);
     expect(call?.body).toBeUndefined();
     expect(Object.keys(call?.headers ?? {}).sort()).toEqual(["accept", "user-agent"]);
     const sent = JSON.stringify(call);
@@ -200,6 +210,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     const { env, keys } = await keyed({ XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state") });
     const fake = fakeProgramscape({
       kept: [
+        { id: "brightdata.free-tier", provider: "brightdata", approved: true },
         { id: "firecrawl.startup-deal", provider: "firecrawl", approved: true },
         { id: "linkup.free-credits", provider: "linkup", approved: true },
         { id: "tavily.startup-credits", provider: "tavily", approved: true },
@@ -207,6 +218,8 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
       ],
     });
     const providers = mockFetch({
+      [URLS.brightdataRequest]: echo(503),
+      [URLS.brightdataBalance]: ok({ balance: 3.5, credit: 0, prepayment: 0, pending_costs: 0 }),
       [URLS.exaSearch]: echo(503),
       [URLS.firecrawlCredits]: ok(fixture("firecrawl-credit-usage")),
       [URLS.firecrawlSearch]: echo(503),
@@ -239,7 +252,7 @@ describe.each(["env", "keychain"] as const)("privacy (keys from %s)", (source) =
     await router.scrape({ url: PAGE });
     await router.flush(); // the automatic sync after the balance reads
     const manual = await router.syncBalances();
-    expect(manual.filter((result) => result.outcome === "synced").map((result) => result.provider)).toEqual(["firecrawl", "linkup", "tavily", "youcom"]);
+    expect(manual.filter((result) => result.outcome === "synced").map((result) => result.provider)).toEqual(["brightdata", "firecrawl", "linkup", "tavily", "youcom"]);
 
     const toProgramscape = fake.seen;
     expect(toProgramscape.length).toBeGreaterThan(0);

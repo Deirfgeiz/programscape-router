@@ -55,6 +55,9 @@ export const timeout: Responder = () => {
 };
 
 export const URLS = {
+  /** Bright Data's search and scrape both go here; brightdata() tells them apart by the request body. */
+  brightdataRequest: "https://api.brightdata.com/request",
+  brightdataBalance: "https://api.brightdata.com/customer/balance",
   exaSearch: "https://api.exa.ai/search",
   exaContents: "https://api.exa.ai/contents",
   firecrawlSearch: "https://api.firecrawl.dev/v2/search",
@@ -74,6 +77,25 @@ export const URLS = {
   youcomContents: "https://ydc-index.io/v1/contents",
   youcomBalance: "https://api.you.com/v1/billing/account_balance",
 } as const;
+
+/** Bright Data's zone endpoints, used only by `keys set brightdata`. Kept out of URLS, which lists the call endpoints. */
+export const BRIGHTDATA_ZONE_URLS = {
+  list: "https://api.brightdata.com/zone/get_active_zones",
+  create: "https://api.brightdata.com/zone",
+} as const;
+
+/** The zones tests give Bright Data, through its environment variables. */
+export const BRIGHTDATA_ZONES = { BRIGHTDATA_SERP_ZONE: "programscape_serp", BRIGHTDATA_UNLOCKER_ZONE: "web_unlocker1" } as const;
+
+/** Answers Bright Data's /request: a search (format "raw") with `search`, a page read (format "json") with `scrape`. */
+export function brightdata(search: Responder, scrape: Responder): Responder {
+  return (call) => ((call.body as { format?: string } | undefined)?.format === "raw" ? search(call) : scrape(call));
+}
+
+/** A 200 that carries Bright Data's failure in its headers, with an empty body (as a captcha came back live). */
+export function brdHeaders(headers: Record<string, string>, body = ""): Responder {
+  return () => new Response(body, { status: 200, headers });
+}
 
 import { readFileSync } from "node:fs";
 

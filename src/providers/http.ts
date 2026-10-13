@@ -45,6 +45,11 @@ export interface ProviderAdapter {
   zoneEnvVars?: Partial<Record<Capability, string>>;
   /** What to run to set up a missing zone, in our own words. */
   zoneFix?: string;
+  /**
+   * A longer search timeout for a provider whose searches are slow by design (Bright Data's took up to 27 s live).
+   * Used when config sets no timeoutMs, in place of the 30 s default; never more than the 60 s scrape default.
+   */
+  searchTimeoutMs?: number;
 }
 
 /** Our own words that go with a failure. Never the provider's text, so they are safe to show and share. */
@@ -214,6 +219,11 @@ export function isoDate(value: unknown): string | undefined {
   if (!text) return undefined;
   const time = Date.parse(text);
   return Number.isNaN(time) ? undefined : new Date(time).toISOString();
+}
+
+/** 30 s, or longer for a provider whose searches are slow by design (Bright Data), up to the 60 s scrape limit. */
+export function searchTimeout(adapter: Pick<ProviderAdapter, "searchTimeoutMs">): number {
+  return Math.min(Math.max(30_000, adapter.searchTimeoutMs ?? 0), 60_000);
 }
 
 export function clampResults(requested: number | undefined, max: number): number {

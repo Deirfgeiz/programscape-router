@@ -2,7 +2,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, parseConfig } from "../src/config.js";
+import { ConfigError, loadConfig, parseConfig, zonesFor } from "../src/config.js";
+import { ADAPTERS } from "../src/providers/index.js";
 
 const README_EXAMPLE = {
   order: { search: ["tavily", "exa"], scrape: ["firecrawl"] },
@@ -36,7 +37,24 @@ describe("config validation", () => {
     const text = message({ order: { search: ["bing"] } });
     expect(text).toContain("test.json is not valid");
     expect(text).toContain("order.search.0");
-    expect(text).toContain('"bing" is not a provider this router knows. Use one of: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.');
+    expect(text).toContain('"bing" is not a provider this router knows. Use one of: brightdata, exa, firecrawl, keenable, linkup, parallel, tavily, youcom.');
+  });
+
+  it("takes Bright Data's zone names, and only for Bright Data", () => {
+    const zones = { providers: { brightdata: { zones: { search: "programscape_serp", scrape: "web_unlocker1" } } } };
+    expect(parseConfig(zones)).toEqual(zones);
+    expect(parseConfig({ providers: { brightdata: { zones: {} } } })).toEqual({ providers: { brightdata: { zones: {} } } });
+    expect(message({ providers: { tavily: { zones: { search: "x" } } } })).toContain("providers.tavily.zones: Tavily has no zones; only brightdata takes them.");
+    expect(message({ providers: { brightdata: { zones: { search: "bad name!" } } } })).toContain("providers.brightdata.zones.search: Use the zone's name as Bright Data shows it");
+    expect(message({ providers: { brightdata: { zones: { crawl: "x" } } } })).toContain("providers.brightdata.zones");
+  });
+
+  it("reads each zone from its environment variable first, then config", () => {
+    const config = { providers: { brightdata: { zones: { search: "config_serp", scrape: "config_unlocker" } } } };
+    expect(zonesFor(ADAPTERS.brightdata, config, {})).toEqual({ search: "config_serp", scrape: "config_unlocker" });
+    expect(zonesFor(ADAPTERS.brightdata, config, { BRIGHTDATA_SERP_ZONE: " env_serp ", BRIGHTDATA_UNLOCKER_ZONE: "" })).toEqual({ search: "env_serp", scrape: "config_unlocker" });
+    expect(zonesFor(ADAPTERS.brightdata, {}, {})).toEqual({});
+    expect(zonesFor(ADAPTERS.tavily, config, { BRIGHTDATA_SERP_ZONE: "x" })).toEqual({});
   });
 
   it("rejects a provider listed twice", () => {

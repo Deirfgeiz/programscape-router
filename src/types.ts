@@ -1,5 +1,5 @@
 /** Every provider the router has an adapter for, alphabetically. Order here is not a preference. */
-export const PROVIDER_IDS = ["exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"] as const;
+export const PROVIDER_IDS = ["brightdata", "exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"] as const;
 /** One of PROVIDER_IDS. */
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 

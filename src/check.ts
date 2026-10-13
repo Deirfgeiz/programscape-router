@@ -11,12 +11,12 @@
  * so it is left out unless `verbose` asks for it, and then marked as not for sharing.
  */
 import { type ProviderPrograms, readPrograms, short, shortLines } from "./catalog.js";
-import type { RouterConfig } from "./config.js";
+import { type RouterConfig, missingZones, zonesFor } from "./config.js";
 import { type KeySource, type ResolvedKeys, keysFromEnv } from "./keys.js";
 import { Readings, defaultReadingsPath } from "./readings.js";
 import { runwaysFor } from "./runway.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter } from "./providers/index.js";
-import { isDocumentedCode } from "./providers/http.js";
+import { isDocumentedCode, searchTimeout } from "./providers/http.js";
 import { type Balance, type Capability, type Outcome, PROVIDER_IDS, type ProviderId } from "./types.js";
 import { VERSION } from "./version.js";
 
@@ -27,7 +27,6 @@ export const CHECK_MAX_RESULTS = 3;
 /** The page each provider is asked to scrape. */
 export const CHECK_URL = "https://example.com";
 
-const SEARCH_TIMEOUT_MS = 30_000;
 const SCRAPE_TIMEOUT_MS = 60_000;
 const BALANCE_TIMEOUT_MS = 10_000;
 const MAX_MESSAGE_LENGTH = 300;
@@ -70,6 +69,8 @@ export interface CheckCall {
   markdownLength?: number;
   /** balance: how many balances the provider reported, and which fields each one carried (never the amounts). */
   balances?: Array<{ kind: string; fields: string[] }>;
+  /** balance: our own words about the reading, from the adapter (never the provider's), such as why there is none. */
+  note?: string;
   /** For a failure: the provider's error code, only when it is one the provider documents (an allow-list per adapter). */
   code?: string;
   /** For a failure: what to do, from a fixed table (CHECK_HINTS). Never the provider's words. */
@@ -87,8 +88,10 @@ export interface CheckProvider {
   envVar: string;
   /** Where its key came from: the environment, the OS keychain, or none. Never the key itself. */
   keySource: KeySource;
-  /** Set when the provider was not called, and why (no key set). */
+  /** Set when the provider was not called, and why (no key set, or not set up: Bright Data without its zones). */
   skipped?: string;
+  /** Set when part of the provider isn't set up (Bright Data with one of its two zones), and how to fix it. Not called for that part. */
+  notSetUp?: string;
   /** False when the provider publishes no balance endpoint, so no balance call was made. */
   balanceSupported: boolean;
   calls: CheckCall[];
@@ -134,7 +137,7 @@ export interface CheckOptions {
   clock?: () => number;
   /** Include each provider's own error message (redacted, but not safe to share). Default false. */
   verbose?: boolean;
-  /** The config, read only for the catalog switch (`programscape.catalog`). */
+  /** The config, read only for the catalog switch (`programscape.catalog`) and Bright Data's zones (`providers.brightdata.zones`). */
   config?: RouterConfig;
   /** Path of readings.json, or false for none. Defaults to the state directory. */
   readingsPath?: string | false;
@@ -192,23 +195,30 @@ async function timed(
 async function checkProvider(
   adapter: ProviderAdapter,
   key: string,
+  zones: Partial<Record<Capability, string>>,
   fetchImpl: FetchLike,
   clock: () => number,
   redact: ((message: string) => string) | undefined,
 ): Promise<{ calls: CheckCall[]; balances: Balance[] }> {
-  const ctx = (timeoutMs: number): CallContext => ({ key, fetch: fetchImpl, timeoutMs });
+  const ctx = (timeoutMs: number): CallContext => ({
+    key,
+    fetch: fetchImpl,
+    timeoutMs,
+    ...(Object.keys(zones).length > 0 ? { zones } : {}),
+  });
+  const missing = missingZones(adapter, zones);
   const calls: CheckCall[] = [];
   let balances: Balance[] = [];
-  if (adapter.search) {
+  if (adapter.search && !missing.includes("search")) {
     const search = adapter.search;
     calls.push(
       await timed(adapter, "search", clock, redact, async () => {
-        const results = await search({ query: CHECK_QUERY, maxResults: CHECK_MAX_RESULTS }, ctx(SEARCH_TIMEOUT_MS));
+        const results = await search({ query: CHECK_QUERY, maxResults: CHECK_MAX_RESULTS }, ctx(searchTimeout(adapter)));
         return { resultCount: results.length };
       }),
     );
   }
-  if (adapter.scrape) {
+  if (adapter.scrape && !missing.includes("scrape")) {
     const scrape = adapter.scrape;
     calls.push(
       await timed(adapter, "scrape", clock, redact, async () => {
@@ -228,6 +238,7 @@ async function checkProvider(
             kind: entry.kind,
             fields: (["remaining", "total", "unit", "endsOn"] as const).filter((field) => entry[field] !== undefined),
           })),
+          ...(reading.note ? { note: reading.note } : {}),
         };
       }),
     );
@@ -269,7 +280,18 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
         balanceSupported: adapter.balance !== undefined,
       };
       if (!key) return { ...base, skipped: `no key: set ${adapter.envVar} or run \`programscape-router keys set ${id}\``, calls: [], balances: [] };
-      return { ...base, ...(await checkProvider(adapter, key, fetchImpl, clock, redact)) };
+      const zones = zonesFor(adapter, options.config ?? {}, env);
+      const missing = missingZones(adapter, zones);
+      const fix = adapter.zoneFix ?? `Run \`programscape-router keys set ${id}\`.`;
+      const parts = missing.map((capability) => (capability === "search" ? "search" : "page-read")).join(" or ");
+      if (missing.length > 0 && missing.length === capabilityCount(adapter)) {
+        return { ...base, skipped: `not set up: no ${adapter.name} ${parts} zone. ${fix}`, calls: [], balances: [] };
+      }
+      return {
+        ...base,
+        ...(missing.length > 0 ? { notSetUp: `no ${adapter.name} ${parts} zone, so it wasn't checked. ${fix}` } : {}),
+        ...(await checkProvider(adapter, key, zones, fetchImpl, clock, redact)),
+      };
     }),
   );
   for (const entry of checked) void readings?.record(entry.provider, entry.balances, now());
@@ -308,12 +330,17 @@ export async function runCheck(options: CheckOptions = {}): Promise<CheckReport>
   };
 }
 
+/** How many of search and scrape an adapter has. */
+function capabilityCount(adapter: ProviderAdapter): number {
+  return (adapter.search ? 1 : 0) + (adapter.scrape ? 1 : 0);
+}
+
 function describe(call: CheckCall): string {
   if (call.ok) {
     if (call.capability === "search") return `${call.resultCount} result${call.resultCount === 1 ? "" : "s"}`;
     if (call.capability === "scrape") return `markdown, ${call.markdownLength} chars`;
     const balances = call.balances ?? [];
-    if (balances.length === 0) return "no balance reported";
+    if (balances.length === 0) return call.note ?? "no balance reported";
     return balances.map((entry) => `${entry.kind} (${entry.fields.length > 0 ? entry.fields.join(", ") : "no fields"})`).join("; ");
   }
   const parts = [call.status !== undefined ? `HTTP ${call.status}` : undefined, call.code, call.hint].filter(Boolean);
@@ -341,19 +368,26 @@ export function formatCheck(report: CheckReport): string {
       lines.push(`  ${call.capability.padEnd(9)}${verdict.padEnd(22)}${`${call.latencyMs} ms`.padStart(8)}  ${describe(call)}`);
       if (call.providerMessage !== undefined) lines.push(`           provider said (not for sharing): ${call.providerMessage}`);
     }
+    if (provider.notSetUp) lines.push(`  not set up: ${provider.notSetUp}`);
     if (!provider.balanceSupported) lines.push(`  ${"balance".padEnd(9)}${"-".padEnd(30)}  no public balance endpoint (add your credits in config)`);
     for (const runway of provider.runway ?? []) lines.push(`  ${"runway".padEnd(9)}${runway.words}`);
     lines.push("");
   }
   if (report.keychainNote) lines.push(`Keychain: ${report.keychainNote}`, "");
   const skipped = report.providers.filter((provider) => provider.skipped).length;
+  const notSetUp = report.providers.filter((provider) => provider.skipped?.startsWith("not set up")).length;
+  const why = notSetUp === 0 ? "no key" : notSetUp === skipped ? "not set up" : "no key, or not set up";
   if (report.attempted === 0) {
-    lines.push("No provider key is set, so nothing was checked. Set at least one of the keys above and run check again.");
+    lines.push(
+      notSetUp > 0
+        ? "Nothing was checked: no provider key is set, or the providers with one aren't set up yet (see above)."
+        : "No provider key is set, so nothing was checked. Set at least one of the keys above and run check again.",
+    );
   } else {
     lines.push(
       `${report.ok ? "PASS" : "FAIL"}: ${report.passed} of ${report.attempted} calls passed` +
         `${report.failed > 0 ? `, ${report.failed} failed` : ""}` +
-        `${skipped > 0 ? `; ${skipped} provider${skipped === 1 ? "" : "s"} skipped (no key)` : ""}.`,
+        `${skipped > 0 ? `; ${skipped} provider${skipped === 1 ? "" : "s"} skipped (${why})` : ""}.`,
     );
   }
   const programs = shortLines(report.programs);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RouterConfig } from "../src/config.js";
 import { type RouterOptions, RouterError, createRouter } from "../src/router.js";
-import { URLS, fixture, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
+import { BRIGHTDATA_ZONES, URLS, brightdata, fixture, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
 
 const NOW = new Date("2026-10-11T12:00:00Z");
 
@@ -13,7 +13,11 @@ function setup(
   routes: Record<string, Responder | Responder[]>,
   keys: Partial<
     Record<
-      "EXA_API_KEY" | "FIRECRAWL_API_KEY" | "KEENABLE_API_KEY" | "LINKUP_API_KEY" | "PARALLEL_API_KEY" | "TAVILY_API_KEY" | "YDC_API_KEY",
+      | "BRIGHTDATA_API_KEY"
+      | "BRIGHTDATA_SERP_ZONE"
+      | "BRIGHTDATA_UNLOCKER_ZONE"
+      | "EXA_API_KEY"
+      | "FIRECRAWL_API_KEY" | "KEENABLE_API_KEY" | "LINKUP_API_KEY" | "PARALLEL_API_KEY" | "TAVILY_API_KEY" | "YDC_API_KEY",
       string
     >
   >,
@@ -125,6 +129,7 @@ describe("failover", () => {
     expect(logs).toEqual(["Exa reported its credits spent; skipping it for the rest of this session."]);
     const status402 = await router.status();
     expect(status402.order.search.skipped).toEqual([
+      expect.objectContaining({ provider: "brightdata" }),
       expect.objectContaining({ provider: "exa", reason: expect.stringContaining("Skipped for the rest of this session.") }),
       expect.objectContaining({ provider: "firecrawl" }),
       expect.objectContaining({ provider: "keenable" }),
@@ -390,6 +395,7 @@ describe("status", () => {
     );
     const status = await router.status();
     expect(status.providers.map((p) => [p.id, p.enabled])).toEqual([
+      ["brightdata", false],
       ["exa", true],
       ["firecrawl", true],
       ["keenable", false],
@@ -416,5 +422,174 @@ describe("result cap", () => {
       "https://example.com/2",
     ]);
     expect((await router.search({ query: "q" })).results).toHaveLength(7);
+  });
+});
+
+describe("Bright Data", () => {
+  const BD = { BRIGHTDATA_API_KEY: "brd", ...BRIGHTDATA_ZONES } as const;
+  const SCRAPED = ok(fixture("brightdata-scrape"));
+  const zoneMissing: Responder = (call) =>
+    new Response(`zone "${(call.body as { zone: string }).zone}" not found`, { status: 400, headers: { "content-type": "text/html" } });
+
+  it("searches and reads pages through the zones from the environment, which win over config", async () => {
+    const { router, calls } = setup(
+      { [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), SCRAPED), [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) },
+      BD,
+      { providers: { brightdata: { zones: { search: "config_serp", scrape: "config_unlocker" } } } },
+    );
+    expect((await router.search({ query: "q" })).routing.provider).toBe("brightdata");
+    expect((await router.scrape({ url: "https://example.com/" })).result.markdown).toContain("Example Domain");
+    expect(calls.filter((call) => call.url === URLS.brightdataRequest).map((call) => (call.body as { zone: string }).zone)).toEqual([
+      "programscape_serp",
+      "web_unlocker1",
+    ]);
+  });
+
+  it("uses config zones when no environment variable names one", async () => {
+    const { router, calls } = setup(
+      { [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), SCRAPED), [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) },
+      { BRIGHTDATA_API_KEY: "brd" },
+      { providers: { brightdata: { zones: { search: "config_serp", scrape: "config_unlocker" } } } },
+    );
+    await router.search({ query: "q" });
+    await router.scrape({ url: "https://example.com/" });
+    expect(calls.filter((call) => call.url === URLS.brightdataRequest).map((call) => (call.body as { zone: string }).zone)).toEqual([
+      "config_serp",
+      "config_unlocker",
+    ]);
+  });
+
+  it("skips a capability with no zone, saying how to set it up, without calling Bright Data for it", async () => {
+    const { router, calls } = setup(
+      { [URLS.brightdataRequest]: SCRAPED, [URLS.brightdataBalance]: ok(fixture("brightdata-balance")), [URLS.tavilySearch]: ok(fixture("tavily-search")), [URLS.tavilyUsage]: ok(fixture("tavily-usage")) },
+      { BRIGHTDATA_API_KEY: "brd", BRIGHTDATA_UNLOCKER_ZONE: "web_unlocker1", TAVILY_API_KEY: "tv" },
+    );
+    expect((await router.search({ query: "q" })).routing.provider).toBe("tavily");
+    expect(calls.some((call) => call.url === URLS.brightdataRequest)).toBe(false);
+    const status = await router.status();
+    expect(status.order.search.skipped.find((entry) => entry.provider === "brightdata")?.reason).toBe(
+      "Bright Data has no search zone set up. Run `programscape-router keys set brightdata` to set up its zones.",
+    );
+    // The page-read zone is set, so scrape still uses it.
+    expect(status.order.scrape.entries.map((entry) => entry.provider)).toContain("brightdata");
+    expect((await router.scrape({ url: "https://example.com/" })).routing.provider).toBe("brightdata");
+  });
+
+  it("on an unknown zone, says so, switches Bright Data off for the session, and fails over", async () => {
+    const { router, logs, calls } = setup(
+      {
+        [URLS.brightdataRequest]: zoneMissing,
+        [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
+        [URLS.tavilySearch]: ok(fixture("tavily-search")),
+        [URLS.tavilyExtract]: ok(fixture("tavily-extract")),
+        [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      },
+      { ...BD, TAVILY_API_KEY: "tv" },
+      { order: { search: ["brightdata", "tavily"], scrape: ["brightdata", "tavily"] } },
+    );
+    const first = await router.search({ query: "q" });
+    expect(first.routing.provider).toBe("tavily");
+    expect(first.routing.tried[0]).toMatchObject({ provider: "brightdata", outcome: "provider_error", status: 400, message: "Bright Data zone programscape_serp not found" });
+    expect(logs).toEqual([
+      "Bright Data zone programscape_serp not found; run `programscape-router keys set brightdata` again. Bright Data is switched off for this session.",
+    ]);
+    // Off for scrape too, for the rest of the session: no second call.
+    await router.scrape({ url: "https://example.com/" });
+    expect(calls.filter((call) => call.url === URLS.brightdataRequest)).toHaveLength(1);
+    expect((await router.status()).providers.find((p) => p.id === "brightdata")?.disabled).toContain("switched off for this session");
+  });
+
+  it("fails over on a captcha in the headers of a 200, and keeps Bright Data on", async () => {
+    const { router, logs } = setup(
+      {
+        [URLS.brightdataRequest]: [
+          () => new Response("", { status: 200, headers: { "x-brd-status-code": "502", "x-brd-error-code": "captcha" } }),
+          ok(fixture("brightdata-search")),
+        ],
+        [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
+        [URLS.tavilySearch]: ok(fixture("tavily-search")),
+        [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      },
+      { ...BD, TAVILY_API_KEY: "tv" },
+      { order: { search: ["brightdata", "tavily"] } },
+    );
+    const first = await router.search({ query: "q" });
+    expect(first.routing.provider).toBe("tavily");
+    expect(first.routing.tried[0]).toMatchObject({ provider: "brightdata", outcome: "provider_error", status: 502 });
+    expect(logs).toEqual([]);
+    expect((await router.search({ query: "q" })).routing.provider).toBe("brightdata");
+  });
+
+  it("gives Bright Data searches 60 seconds unless config sets a timeout; other providers keep 30", async () => {
+    const seen: Array<[string, number | undefined]> = [];
+    const spy: Responder = (call) => {
+      seen.push([new URL(call.url).host, undefined]);
+      return new Response(JSON.stringify({ organic: [] }));
+    };
+    let timeouts: number[] = [];
+    const realTimeout = AbortSignal.timeout;
+    AbortSignal.timeout = (ms: number) => {
+      timeouts.push(ms);
+      return realTimeout.call(AbortSignal, ms);
+    };
+    try {
+      const { router } = setup({ [URLS.brightdataRequest]: spy, [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) }, BD);
+      await router.search({ query: "q" });
+      expect(timeouts).toContain(60_000);
+      expect(timeouts).not.toContain(30_000);
+      timeouts = [];
+      const configured = setup({ [URLS.brightdataRequest]: spy, [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) }, BD, { timeoutMs: 20_000 });
+      await configured.router.search({ query: "q" });
+      expect(timeouts).toContain(20_000);
+      expect(timeouts).not.toContain(60_000);
+    } finally {
+      AbortSignal.timeout = realTimeout;
+    }
+    expect(seen.length).toBe(2);
+  });
+
+  it("shows a $0 paid balance but doesn't order on it: Bright Data stays with the providers nothing is known about", async () => {
+    const zero = { balance: 0, credit: 0, prepayment: 0, pending_costs: 0 };
+    const { router } = setup(
+      { [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), SCRAPED), [URLS.brightdataBalance]: ok(zero) },
+      { ...BD, EXA_API_KEY: "ex" },
+      { providers: { brightdata: { paid: false } } },
+    );
+    const status = await router.status();
+    const entry = status.providers.find((p) => p.id === "brightdata");
+    expect(entry?.balances).toEqual([expect.objectContaining({ label: "Bright Data paid balance", remaining: 0, unit: "usd", informational: true })]);
+    expect(entry?.balanceNote).toContain("Free monthly credits aren't included: Bright Data doesn't report them.");
+    // A $0 counted as spent credits would skip Bright Data here (paid: false) or send it last; it does neither.
+    const first = status.order.search.entries[0];
+    expect(first).toMatchObject({ provider: "brightdata", tier: "credits-no-end-date" });
+    expect(first?.reason).toBe("Nothing is known about its credits, so it counts as credits with no known end date.");
+  });
+
+  it("orders on a paid balance above $0, as credits with no known end date", async () => {
+    const { router } = setup(
+      { [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), SCRAPED), [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) },
+      BD,
+      { providers: { brightdata: { paid: true } } },
+    );
+    const entry = (await router.status()).order.search.entries[0];
+    expect(entry).toMatchObject({ provider: "brightdata", tier: "credits-no-end-date" });
+    expect(entry?.reason).toBe('Credits with no known end date: "Bright Data paid balance".');
+  });
+
+  it("keeps Bright Data on when its key may not read the balance (403), with a note instead", async () => {
+    const { router, logs } = setup(
+      {
+        [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), SCRAPED),
+        [URLS.brightdataBalance]: () => new Response("Your API key lacks the required permissions for this action", { status: 403 }),
+      },
+      BD,
+    );
+    const status = await router.status();
+    const entry = status.providers.find((p) => p.id === "brightdata");
+    expect(entry).toMatchObject({ enabled: true, balances: [] });
+    expect(entry).not.toHaveProperty("disabled");
+    expect(entry?.balanceNote).toContain("needs an Admin key");
+    expect((await router.search({ query: "q" })).routing.provider).toBe("brightdata");
+    expect(logs).toEqual([]);
   });
 });

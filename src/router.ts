@@ -9,6 +9,7 @@ import { type BalanceSync, type ProgramscapeSyncStatus, type ProviderReading, ty
 import { Readings, defaultReadingsPath } from "./readings.js";
 import { DEFAULT_HEADS_UP_DAYS, type HeadsUpReason, type RunwayEstimate, foundersEndDates, headsUpFor, runwaysFor } from "./runway.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter, supports } from "./providers/index.js";
+import { searchTimeout } from "./providers/http.js";
 import {
   type Attempt,
   type Balance,
@@ -165,7 +166,6 @@ export class RouterError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
 const SCRAPE_TIMEOUT_MS = 60_000;
 const BALANCE_TIMEOUT_MS = 10_000;
 
@@ -394,7 +394,7 @@ export function createRouter(options: RouterOptions = {}): Router {
   async function route<T>(
     capability: Capability,
     call: (adapter: ProviderAdapter, ctx: CallContext) => Promise<T>,
-    timeoutMs: number,
+    timeoutMs: (adapter: ProviderAdapter) => number,
   ): Promise<{ value: T; routing: Routing }> {
     const order = orderFor(capability, await standings(false));
     const tried: Attempt[] = [];
@@ -409,7 +409,7 @@ export function createRouter(options: RouterOptions = {}): Router {
       const id = entry.provider;
       const adapter = ADAPTERS[id];
       try {
-        const value = await call(adapter, context(id, timeoutMs));
+        const value = await call(adapter, context(id, timeoutMs(adapter)));
         tried.push({ provider: id, outcome: "ok" });
         void ledger?.record(id, capability, "ok", now());
         return { value, routing: { provider: id, reason: entry.reason, rule: order.rule, tried } };
@@ -454,7 +454,7 @@ export function createRouter(options: RouterOptions = {}): Router {
       const { value, routing } = await route<SearchResult[]>(
         "search",
         (adapter, ctx) => (adapter.search as NonNullable<ProviderAdapter["search"]>)({ ...request, query }, ctx),
-        timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        (adapter) => timeoutMs ?? searchTimeout(adapter),
       );
       // Each adapter asks for at most this many; trimming here keeps the cap even if a provider ignores it.
       return { results: value.slice(0, request.maxResults ?? 10), routing };
@@ -474,7 +474,7 @@ export function createRouter(options: RouterOptions = {}): Router {
       const { value, routing } = await route<ScrapeResult>(
         "scrape",
         (adapter, ctx) => (adapter.scrape as NonNullable<ProviderAdapter["scrape"]>)({ url }, ctx),
-        timeoutMs ?? SCRAPE_TIMEOUT_MS,
+        () => timeoutMs ?? SCRAPE_TIMEOUT_MS,
       );
       return { result: value, routing };
     },

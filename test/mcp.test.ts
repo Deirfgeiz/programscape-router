@@ -50,6 +50,6 @@ describe("MCP server", () => {
     const result = await client.callTool({ name: "credits_status", arguments: {} });
     const body = JSON.parse(text(result));
     expect(body.order.scrape.rule).toBe("credits-ending-first");
-    expect(body.providers.map((p: { id: string }) => p.id)).toEqual(["exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"]);
+    expect(body.providers.map((p: { id: string }) => p.id)).toEqual(["brightdata", "exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"]);
   });
 });

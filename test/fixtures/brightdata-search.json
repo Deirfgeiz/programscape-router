@@ -1,0 +1,10 @@
+{
+  "general": { "search_engine": "google", "query": "startup credits", "language": "en", "location": "United States", "mobile": false, "basic_view": false, "search_type": "text", "page_title": "startup credits - Google Search", "timestamp": "2026-10-12T21:04:11.120Z" },
+  "input": { "original_url": "https://www.google.com/search?q=startup%20credits&hl=en&gl=us&brd_json=1", "request_id": "hl_0a1b2c3d" },
+  "organic": [
+    { "link": "https://aws.amazon.com/startups/credits", "display_link": "https://aws.amazon.com › startups › credits", "title": "AWS Activate credits", "description": "Get up to $100,000 in AWS credits for your startup.", "rank": 1, "global_rank": 1 },
+    { "link": "https://cloud.google.com/startup", "display_link": "https://cloud.google.com › startup", "title": "Google for Startups Cloud Program", "description": "Credits and support for startups building on Google Cloud.", "rank": 2, "global_rank": 3, "extensions": [{ "type": "site_link", "link": "https://cloud.google.com/startup/apply", "text": "Apply" }] },
+    { "link": "https://example.com/no-description", "title": "A result without a description", "rank": 3, "global_rank": 4 },
+    { "title": "An entry without a link is dropped", "rank": 4, "global_rank": 5 }
+  ]
+}
