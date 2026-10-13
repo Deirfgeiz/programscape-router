@@ -207,6 +207,16 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
         continue;
       }
       const balance = liveBalance(reading.balances);
+      const shownOnly = reading.balances.find((entry) => entry.source === "provider" && entry.informational);
+      if (!balance && shownOnly) {
+        // Never sent: a $0 that leaves out free credits would tell the plan the credits are gone.
+        results.push({
+          provider: reading.provider,
+          outcome: "skipped",
+          message: `Not synced. ${ADAPTERS[reading.provider].name} reported ${shownOnly.remaining ?? "no"} ${shownOnly.unit ?? ""} for "${shownOnly.label}", which leaves out free credits it doesn't report, so it isn't sent to your plan.`.replace(/ {2,}/g, " "),
+        });
+        continue;
+      }
       if (!balance) {
         results.push({
           provider: reading.provider,

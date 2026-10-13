@@ -159,7 +159,7 @@ export interface LiveBalance {
  */
 export function liveBalance(balances: readonly Balance[]): LiveBalance | undefined {
   for (const balance of balances) {
-    if (balance.source !== "provider" || balance.kind !== "credits") continue;
+    if (balance.source !== "provider" || balance.kind !== "credits" || balance.informational) continue;
     if (balance.remaining === undefined || !Number.isFinite(balance.remaining) || !balance.asOf) continue;
     const unit = SYNC_UNITS.find((candidate) => candidate === balance.unit);
     if (!unit) continue;

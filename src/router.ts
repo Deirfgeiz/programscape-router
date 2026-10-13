@@ -1,5 +1,5 @@
 import { type CatalogOptions, type ProviderPrograms, defaultCatalogPath, programName, readPrograms, short } from "./catalog.js";
-import { type RouterConfig, loadConfig } from "./config.js";
+import { type RouterConfig, loadConfig, missingZones, zonesFor } from "./config.js";
 import { type KeySource, type ResolvedKeys, keysFromEnv } from "./keys.js";
 import { Ledger, defaultLedgerPath } from "./ledger.js";
 import { claimHeadsUps, defaultNoticesPath } from "./notices.js";
@@ -234,16 +234,23 @@ export function createRouter(options: RouterOptions = {}): Router {
     return clean.length > 500 ? `${clean.slice(0, 497)}...` : clean;
   }
 
+  // Zones (Bright Data) are read once, at creation, like the keys.
+  const zones = new Map(PROVIDER_IDS.map((id) => [id, zonesFor(ADAPTERS[id], config, env)] as const));
+
   function context(id: ProviderId, timeoutMs: number): CallContext {
     const key = keys.get(id);
     if (!key) throw new Error(`no key for ${id}`);
-    return { key, fetch: fetchImpl, timeoutMs };
+    const zoneSet = zones.get(id) ?? {};
+    return { key, fetch: fetchImpl, timeoutMs, ...(Object.keys(zoneSet).length > 0 ? { zones: zoneSet } : {}) };
   }
 
-  function disable(id: ProviderId, status: number | undefined): void {
+  /** Switches a provider off for the session: its key was refused, or (with `fix`) a setting it needs is wrong. */
+  function disable(id: ProviderId, status: number | undefined, fix?: string): void {
     const adapter = ADAPTERS[id];
-    const reason = `${adapter.name} refused the key in ${adapter.envVar}${status ? ` (HTTP ${status})` : ""}; disabled for this session.`;
-    if (!disabled.has(id)) log(`${reason} Check the key and restart.`);
+    const reason = fix
+      ? `${fix} ${adapter.name} is switched off for this session.`
+      : `${adapter.name} refused the key in ${adapter.envVar}${status ? ` (HTTP ${status})` : ""}; disabled for this session.`;
+    if (!disabled.has(id)) log(fix ? reason : `${reason} Check the key and restart.`);
     disabled.set(id, reason);
   }
 
@@ -274,7 +281,7 @@ export function createRouter(options: RouterOptions = {}): Router {
     const read = (async (): Promise<BalanceCache> => {
       try {
         const reading = await adapter.balance!(context(id, BALANCE_TIMEOUT_MS));
-        const entry = { at: now().getTime(), balances: reading.balances };
+        const entry: BalanceCache = { at: now().getTime(), balances: reading.balances, ...(reading.note ? { note: reading.note } : {}) };
         balanceCache.set(id, entry);
         // Queued like the ledger: a readings problem never breaks a call.
         void readings?.record(id, reading.balances, now());
@@ -372,9 +379,15 @@ export function createRouter(options: RouterOptions = {}): Router {
   }
 
   function orderFor(capability: Capability, all: Map<ProviderId, ProviderStanding>): CapabilityOrder {
-    const candidates = PROVIDER_IDS.filter((id) => supports(ADAPTERS[id], capability)).map(
-      (id) => all.get(id) as ProviderStanding,
-    );
+    const candidates = PROVIDER_IDS.filter((id) => supports(ADAPTERS[id], capability)).map((id): ProviderStanding => {
+      const standing = all.get(id) as ProviderStanding;
+      const adapter = ADAPTERS[id];
+      // A key without the zone this capability needs (Bright Data) isn't set up for it: skipped, with the fix.
+      if (standing.enabled && !standing.disabled && missingZones(adapter, zones.get(id) ?? {}).includes(capability)) {
+        return { ...standing, disabled: `${adapter.name} has no ${capability === "search" ? "search" : "page-read"} zone set up. ${adapter.zoneFix ?? ""}`.trim() };
+      }
+      return standing;
+    });
     return computeOrder(capability, candidates, config.order?.[capability], now());
   }
 
@@ -411,6 +424,7 @@ export function createRouter(options: RouterOptions = {}): Router {
         });
         void ledger?.record(id, capability, failure.outcome, now());
         if (failure.outcome === "exhausted") markExhausted(id, failure.status);
+        else if (failure.switchOff) disable(id, failure.status, failure.fix);
         else if (failure.outcome === "unauthorized") disable(id, failure.status);
         else if (failure.outcome === "bad_request") {
           throw new RouterError(

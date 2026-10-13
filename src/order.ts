@@ -131,7 +131,7 @@ export function unavailableReason(standing: ProviderStanding, now: Date): string
 
 /** Where a usable provider sits under the default rule, or why it is skipped. */
 export function place(standing: ProviderStanding, now: Date): Placement | { skip: string } {
-  const credits = standing.balances.filter((balance) => balance.kind === "credits");
+  const credits = standing.balances.filter((balance) => balance.kind === "credits" && !balance.informational);
   const live = credits.filter((balance) => !isEnded(balance, now) && !isSpent(balance));
 
   const ending = live

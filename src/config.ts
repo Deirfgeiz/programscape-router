@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { configDir } from "./paths.js";
 import { z } from "zod";
-import { PROVIDER_IDS, type ProviderId } from "./types.js";
+import { ADAPTERS, type ProviderAdapter } from "./providers/index.js";
+import { CAPABILITIES, type Capability, PROVIDER_IDS, type ProviderId } from "./types.js";
 
 const providerId = z.enum(PROVIDER_IDS, {
   error: (issue) => `"${String(issue.input)}" is not a provider this router knows. Use one of: ${PROVIDER_IDS.join(", ")}.`,
@@ -23,8 +24,18 @@ const credit = z
   })
   .describe("Credits you hold with this provider. Every field is optional; leave out what you don't know.");
 
+/** A zone name as Bright Data shows it: letters, digits, underscores and hyphens. Not a secret. */
+export const zoneName = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,64}$/, "Use the zone's name as Bright Data shows it, such as programscape_serp (letters, digits, _ and -).");
+
+const zoneSettings = z
+  .strictObject({ search: zoneName.optional(), scrape: zoneName.optional() })
+  .describe("The zone in your account each capability's requests go to (Bright Data). `keys set` fills it in.");
+
 const providerSettings = z.strictObject({
   paid: z.boolean().optional(),
+  zones: zoneSettings.optional(),
   credits: z.array(credit).optional(),
   /**
    * Which kept, approved program on the founder's Programscape plan this provider's live balance belongs to,
@@ -61,18 +72,26 @@ const orderList = z
   .array(providerId)
   .refine((list) => new Set(list).size === list.length, "List each provider once.");
 
-export const configSchema = z.strictObject({
-  order: z
-    .strictObject({
-      search: orderList.optional(),
-      scrape: orderList.optional(),
-    })
-    .optional(),
-  providers: z.partialRecord(providerId, providerSettings).optional(),
-  programscape: programscapeSettings.optional(),
-  headsUp: headsUpSettings.optional(),
-  timeoutMs: z.number().int().min(1000).max(300_000).optional(),
-});
+export const configSchema = z
+  .strictObject({
+    order: z
+      .strictObject({
+        search: orderList.optional(),
+        scrape: orderList.optional(),
+      })
+      .optional(),
+    providers: z.partialRecord(providerId, providerSettings).optional(),
+    programscape: programscapeSettings.optional(),
+    headsUp: headsUpSettings.optional(),
+    timeoutMs: z.number().int().min(1000).max(300_000).optional(),
+  })
+  .superRefine((config, ctx) => {
+    for (const id of PROVIDER_IDS) {
+      if (config.providers?.[id]?.zones !== undefined && !ADAPTERS[id].zoneEnvVars) {
+        ctx.addIssue({ code: "custom", path: ["providers", id, "zones"], message: `${ADAPTERS[id].name} has no zones; only brightdata takes them.` });
+      }
+    }
+  });
 
 /** The config file's shape. Every field is optional; see the README's Config section. */
 export type RouterConfig = z.infer<typeof configSchema>;
@@ -136,6 +155,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
     return { path, config: parseConfig(raw, path) };
   }
   return { path: undefined, config: {} };
+}
+
+/**
+ * The zone each capability uses, for an adapter that needs zones: its environment variable when set (so
+ * BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE win), otherwise config `providers.<id>.zones`. Empty otherwise.
+ */
+export function zonesFor(
+  adapter: Pick<ProviderAdapter, "id" | "zoneEnvVars">,
+  config: RouterConfig,
+  env: Record<string, string | undefined>,
+): Partial<Record<Capability, string>> {
+  if (!adapter.zoneEnvVars) return {};
+  const zones: Partial<Record<Capability, string>> = {};
+  for (const capability of CAPABILITIES) {
+    const envVar = adapter.zoneEnvVars[capability];
+    const zone = (envVar ? env[envVar]?.trim() : undefined) || config.providers?.[adapter.id]?.zones?.[capability];
+    if (zone) zones[capability] = zone;
+  }
+  return zones;
+}
+
+/** The capabilities an adapter has that still need a zone (none for a provider without zones). */
+export function missingZones(adapter: ProviderAdapter, zones: Partial<Record<Capability, string>>): Capability[] {
+  if (!adapter.zoneEnvVars) return [];
+  return CAPABILITIES.filter((capability) => (capability === "search" ? adapter.search : adapter.scrape) !== undefined && !zones[capability]);
 }
 
 export function providerSettingsFor(config: RouterConfig, id: ProviderId) {

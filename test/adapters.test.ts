@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ADAPTERS, type CallContext, ProviderCallError } from "../src/providers/index.js";
+import { requestJson } from "../src/providers/http.js";
 import { URLS, fixture, json, mockFetch, ok, status } from "./helpers.js";
 
 function ctx(fetch: CallContext["fetch"], key = "test-key"): CallContext {
@@ -567,6 +568,35 @@ describe("shared HTTP handling", () => {
       });
     const error = await failure(ADAPTERS.exa.search!({ query: "q" }, { key: "k", fetch, timeoutMs: 20 }));
     expect(error.outcome).toBe("timeout");
+  });
+
+  it("lets an adapter read headers and the raw text of every answer, 2xx included, and fail it", async () => {
+    const { fetch } = mockFetch({
+      "https://api.example.test/ok": () => new Response('{"fine":true}', { status: 200, headers: { "x-error": "captcha" } }),
+      "https://api.example.test/text": () => new Response('zone "x" not found', { status: 400, headers: { "content-type": "text/html" } }),
+    });
+    const seen: Array<{ status: number; header: string | null; body: unknown; text: string }> = [];
+    const inspect = (answer: { status: number; headers: Headers; body: unknown; text: string }) => {
+      seen.push({ status: answer.status, header: answer.headers.get("x-error"), body: answer.body, text: answer.text });
+      return answer.headers.get("x-error") ? new ProviderCallError("provider_error", "header said so", answer.status, "captcha") : undefined;
+    };
+    const failed = await failure(requestJson(ctx(fetch), "https://api.example.test/ok", { headers: {}, inspect }));
+    expect(failed).toMatchObject({ outcome: "provider_error", status: 200, code: "captcha", switchOff: false });
+    // A text body reaches the hook as text; returning undefined leaves the shared reading (400 is a bad request).
+    const plain = await failure(requestJson(ctx(fetch), "https://api.example.test/text", { headers: {}, inspect }));
+    expect(plain.outcome).toBe("bad_request");
+    expect(seen).toEqual([
+      { status: 200, header: "captcha", body: { fine: true }, text: '{"fine":true}' },
+      { status: 400, header: null, body: undefined, text: 'zone "x" not found' },
+    ]);
+    // Without a hook nothing changes.
+    expect(await requestJson(ctx(fetch), "https://api.example.test/ok", { headers: {} })).toEqual({ fine: true });
+  });
+
+  it("carries our own fix and the switch-off flag on a failure", () => {
+    const error = new ProviderCallError("provider_error", "m", 400, undefined, { fix: "Run setup.", switchOff: true });
+    expect(error).toMatchObject({ fix: "Run setup.", switchOff: true });
+    expect(new ProviderCallError("timeout", "m")).toMatchObject({ fix: undefined, switchOff: false });
   });
 
   it("every adapter cites its official docs", () => {

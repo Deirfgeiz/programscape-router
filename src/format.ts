@@ -26,6 +26,7 @@ export function formatBalance(balance: Balance): string {
         ? "your own date, from your Programscape plan"
         : "from your config",
   );
+  if (balance.informational) parts.push("shown only: not used for the order or sent to your plan");
   return `"${balance.label}" (${balance.kind}): ${parts.join(", ")}`;
 }
 

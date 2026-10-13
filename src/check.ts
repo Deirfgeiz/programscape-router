@@ -174,7 +174,7 @@ async function timed(
         ...(error.status !== undefined ? { status: error.status } : {}),
         ...(isDocumentedCode(adapter, error.code) ? { code: error.code } : {}),
         latencyMs,
-        hint: CHECK_HINTS[error.outcome],
+        hint: error.fix ?? CHECK_HINTS[error.outcome],
         ...(redact ? { providerMessage: redact(error.message) } : {}),
       };
     }

@@ -57,7 +57,7 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 /** The readings a provider's live balances give: credits it reported, with a unit, a remaining amount and a time. */
 export function readingsFrom(provider: ProviderId, balances: readonly Balance[]): Reading[] {
   return balances.flatMap((balance): Reading[] => {
-    if (balance.source !== "provider" || balance.kind !== "credits") return [];
+    if (balance.source !== "provider" || balance.kind !== "credits" || balance.informational) return [];
     if (!balance.unit || !finite(balance.remaining) || !balance.asOf || Number.isNaN(Date.parse(balance.asOf))) return [];
     return [
       {
