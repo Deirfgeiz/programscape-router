@@ -52,8 +52,8 @@ Usage:
 
 Keys are read from BRIGHTDATA_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, LINKUP_API_KEY,
 PARALLEL_API_KEY, TAVILY_API_KEY and YDC_API_KEY, or, when a variable isn't set, from the OS keychain (see keys
-set). A variable wins over the keychain. Bright Data's zones are in config (keys set brightdata saves them), or in
-BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE.
+set). A variable wins over the keychain. Bright Data's zones are saved in zones.json by keys set brightdata, or set
+in BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE.
 Providers: brightdata, exa, firecrawl, keenable, linkup, parallel, tavily, youcom.
 Find startup credits for these tools at https://programscape.com
 Without connect, the only call to Programscape is a read of its public catalog (which providers have a key set, at
