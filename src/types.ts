@@ -1,5 +1,5 @@
 /** Every provider the router has an adapter for, alphabetically. Order here is not a preference. */
-export const PROVIDER_IDS = ["exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"] as const;
+export const PROVIDER_IDS = ["brightdata", "exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"] as const;
 /** One of PROVIDER_IDS. */
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
@@ -115,4 +115,10 @@ export interface Balance {
   source: "provider" | "config" | "plan";
   /** When the provider reported it. */
   asOf?: string;
+  /**
+   * True for a reading shown for information only: it never places the provider in the order, never counts toward a
+   * runway, and is never sent to a Programscape plan. Bright Data's paid balance is one when it reads $0, since
+   * Bright Data doesn't report the free monthly credits that may still be left.
+   */
+  informational?: true;
 }

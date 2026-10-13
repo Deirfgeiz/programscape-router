@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { CHECK_HINTS, CHECK_URL, VERBOSE_WARNING, formatCheck, runCheck } from "../src/check.js";
 import { main } from "../src/cli-main.js";
-import { URLS, fixture, json, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
+import { BRIGHTDATA_ZONES, URLS, brdHeaders, brightdata, fixture, json, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
 
 const KEYS = {
+  BRIGHTDATA_API_KEY: "brd-CHECKSECRET-8888",
   EXA_API_KEY: "exa-CHECKSECRET-1111",
   FIRECRAWL_API_KEY: "fc-CHECKSECRET-2222",
   KEENABLE_API_KEY: "keen_CHECKSECRET-3333",
@@ -16,6 +17,7 @@ const KEYS = {
   YDC_API_KEY: "ydc-CHECKSECRET-7777",
 };
 const PROVIDER_HOSTS = new Set([
+  "api.brightdata.com",
   "api.exa.ai",
   "api.firecrawl.dev",
   "api.keenable.ai",
@@ -26,6 +28,9 @@ const PROVIDER_HOSTS = new Set([
   "api.you.com",
 ]);
 
+/** The keys, with Bright Data's zone names (settings, not secrets). */
+const ENV = { ...KEYS, ...BRIGHTDATA_ZONES };
+
 /** Every piece of content a provider hands back carries "zebra", so a leak anywhere is easy to find. */
 const TITLE = "Result title zebra-title";
 const RESULT_URL = "https://results.example/zebra-url";
@@ -33,6 +38,11 @@ const SNIPPET = "Snippet text zebra-snippet";
 const PAGE = "# Page heading zebra-page\n\nBody text zebra-body.";
 
 const success: Record<string, Responder> = {
+  [URLS.brightdataRequest]: brightdata(
+    ok({ organic: [1, 2, 3].map((n) => ({ link: `${RESULT_URL}/${n}`, title: `${TITLE} ${n}`, description: SNIPPET, rank: n })) }),
+    ok({ status_code: 200, headers: { "content-type": "text/html" }, body: PAGE }),
+  ),
+  [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
   [URLS.exaSearch]: ok({
     requestId: "r",
     results: [1, 2, 3].map((n) => ({ title: `${TITLE} ${n}`, url: `${RESULT_URL}/${n}`, highlights: [SNIPPET] })),
@@ -83,14 +93,15 @@ describe("check", () => {
     const { fetch, calls } = mockFetch(success);
     // Providers run side by side, so a stepping clock would interleave; a fixed one keeps latencies at 0 here.
     // The catalog read has its own tests below; here, only provider calls.
-    const report = await runCheck({ env: KEYS, fetch, now: () => new Date("2026-10-11T12:00:00Z"), clock: () => 1000, catalogPath: false });
+    const report = await runCheck({ env: ENV, fetch, now: () => new Date("2026-10-11T12:00:00Z"), clock: () => 1000, catalogPath: false });
 
     expect(report.ok).toBe(true);
-    expect(report).toMatchObject({ attempted: 18, passed: 18, failed: 0, query: "startup credits", maxResults: 3, url: "https://example.com" });
+    expect(report).toMatchObject({ attempted: 21, passed: 21, failed: 0, query: "startup credits", maxResults: 3, url: "https://example.com" });
 
     // One call per endpoint: no routing, no failover, no retries.
     const urls = calls.map((call) => call.url.split("?")[0]);
-    expect(urls.sort()).toEqual(Object.values(URLS).sort());
+    // Bright Data's search and scrape share one endpoint.
+    expect(urls.sort()).toEqual([...Object.values(URLS), URLS.brightdataRequest].sort());
     for (const call of calls) expect(PROVIDER_HOSTS.has(new URL(call.url).host)).toBe(true);
 
     // The fixed query and page.
@@ -150,7 +161,7 @@ describe("check", () => {
     expect(text).toContain(`  scrape   ok                        0 ms  markdown, ${PAGE.length} chars`);
     expect(text).toContain("  balance  -                               no public balance endpoint (add your credits in config)");
     expect(text).toContain("  balance  ok                        0 ms  credits (remaining, total, unit, endsOn)");
-    expect(text).toContain("PASS: 18 of 18 calls passed.");
+    expect(text).toContain("PASS: 21 of 21 calls passed.");
     expectNoContent(text);
     expectNoContent(JSON.stringify(report));
     // Balance amounts are not part of the report either.
@@ -182,7 +193,7 @@ describe("check", () => {
       expect(search).not.toHaveProperty("providerMessage");
       expect(report).toMatchObject({ ok: false, attempted: 2, passed: 1, failed: 1, verbose: false });
       expect(formatCheck(report)).toContain(`  search   FAIL ${outcome}`);
-      expect(formatCheck(report)).toContain("FAIL: 1 of 2 calls passed, 1 failed; 6 providers skipped (no key).");
+      expect(formatCheck(report)).toContain("FAIL: 1 of 2 calls passed, 1 failed; 7 providers skipped (no key).");
 
       const { streams } = io();
       expect(await main(["check"], streams, { env: { EXA_API_KEY: KEYS.EXA_API_KEY }, fetch })).toBe(1);
@@ -198,8 +209,13 @@ describe("check", () => {
       [URLS.keenableFetch]: status(402, { detail: "No credits available" }),
       [URLS.linkupSearch]: status(429, fixture("linkup-error-429")),
       [URLS.youcomSearch]: status(402, { detail: "Insufficient credits" }),
+      // Not verified live: the code Bright Data's own MCP server reads as the free-tier limit.
+      [URLS.brightdataRequest]: brightdata(
+        brdHeaders({ "x-brd-status-code": "502", "x-brd-err-code": "client_10100", "x-brd-err-msg": "Zone has reached usage limit" }),
+        ok({ status_code: 200, headers: {}, body: PAGE }),
+      ),
     });
-    const report = await runCheck({ env: KEYS, fetch });
+    const report = await runCheck({ env: ENV, fetch });
     const outcome = (provider: string, capability: string) =>
       report.providers.find((p) => p.provider === provider)?.calls.find((c) => c.capability === capability);
     expect(outcome("firecrawl", "scrape")).toMatchObject({ outcome: "exhausted", status: 402, code: "insufficient_credits" });
@@ -209,7 +225,11 @@ describe("check", () => {
     expect(outcome("linkup", "search")).toMatchObject({ outcome: "exhausted", status: 429, code: "INSUFFICIENT_FUNDS_CREDITS" });
     expect(outcome("youcom", "search")).toMatchObject({ outcome: "exhausted", status: 402 });
     expect(outcome("youcom", "search")).not.toHaveProperty("code");
-    expect(report.failed).toBe(6);
+    expect(outcome("brightdata", "search")).toMatchObject({ outcome: "exhausted", status: 502, code: "client_10100" });
+    // Spent credits keep the class hint; an unlock failure gets its own words.
+    expect(outcome("brightdata", "search")?.hint).toBe(CHECK_HINTS.exhausted);
+    expect(report.failed).toBe(7);
+    expect(JSON.stringify(report)).not.toContain("usage limit");
     // The providers' own words stay out of the default report.
     expect(JSON.stringify(report)).not.toContain("Insufficient credit");
     expect(JSON.stringify(report)).not.toContain("No credits available");
@@ -301,6 +321,65 @@ describe("check", () => {
     }
   });
 
+  it("reports Bright Data without zones as not set up, with the fix, and makes no call", async () => {
+    const { fetch, calls } = mockFetch(success);
+    const report = await runCheck({ env: { BRIGHTDATA_API_KEY: KEYS.BRIGHTDATA_API_KEY }, fetch, catalogPath: false });
+    expect(calls).toHaveLength(0);
+    expect(report.providers.find((p) => p.provider === "brightdata")).toMatchObject({
+      skipped: "not set up: no Bright Data search or page-read zone. Run `programscape-router keys set brightdata` to set up its zones.",
+      calls: [],
+    });
+    expect(report).toMatchObject({ attempted: 0, ok: false });
+    const text = formatCheck(report);
+    expect(text).toContain("brightdata: skipped (not set up: no Bright Data search or page-read zone.");
+    expect(text).toContain("Nothing was checked: no provider key is set, or the providers with one aren't set up yet (see above).");
+  });
+
+  it("checks the half of Bright Data that has a zone, and says the other half isn't set up (config zones, an env override)", async () => {
+    const { fetch, calls } = mockFetch(success);
+    const report = await runCheck({
+      env: { BRIGHTDATA_API_KEY: KEYS.BRIGHTDATA_API_KEY, EXA_API_KEY: KEYS.EXA_API_KEY, BRIGHTDATA_SERP_ZONE: "serp_from_env" },
+      config: { providers: { brightdata: { zones: { search: "serp_from_config" } } } },
+      fetch,
+      catalogPath: false,
+    });
+    const brightdataCalls = calls.filter((call) => call.url === URLS.brightdataRequest);
+    expect(brightdataCalls.map((call) => (call.body as { zone: string }).zone)).toEqual(["serp_from_env"]);
+    const entry = report.providers.find((p) => p.provider === "brightdata");
+    expect(entry?.calls.map((call) => [call.capability, call.ok])).toEqual([
+      ["search", true],
+      ["balance", true],
+    ]);
+    expect(entry?.notSetUp).toBe("no Bright Data page-read zone, so it wasn't checked. Run `programscape-router keys set brightdata` to set up its zones.");
+    // Not set up isn't a failed call.
+    expect(report).toMatchObject({ ok: true, failed: 0 });
+    expect(formatCheck(report)).toContain("  not set up: no Bright Data page-read zone");
+    expect(formatCheck(report)).toContain("  balance  ok");
+  });
+
+  it("names an unknown Bright Data zone and the fix in place of the class hint, and a balance it may not read as no balance", async () => {
+    const { fetch } = mockFetch({
+      ...success,
+      [URLS.brightdataRequest]: brightdata(
+        () => new Response('zone "programscape_serp" not found', { status: 400, headers: { "content-type": "text/html" } }),
+        ok({ status_code: 200, headers: {}, body: PAGE }),
+      ),
+      [URLS.brightdataBalance]: () => new Response("Your API key lacks the required permissions for this action", { status: 403 }),
+    });
+    const report = await runCheck({ env: { BRIGHTDATA_API_KEY: KEYS.BRIGHTDATA_API_KEY, ...BRIGHTDATA_ZONES }, fetch, catalogPath: false });
+    const entry = report.providers.find((p) => p.provider === "brightdata");
+    expect(entry?.calls).toMatchObject([
+      { capability: "search", ok: false, outcome: "provider_error", status: 400, hint: "Bright Data zone programscape_serp not found; run `programscape-router keys set brightdata` again." },
+      { capability: "scrape", ok: true },
+      { capability: "balance", ok: true, balances: [], note: expect.stringContaining("needs an Admin key") },
+    ]);
+    const text = formatCheck(report);
+    expect(text).toContain("Bright Data zone programscape_serp not found; run `programscape-router keys set brightdata` again.");
+    expect(text).toContain("balance  ok");
+    expect(text).toContain("Bright Data didn't let this key read the balance (reading it needs an Admin key)");
+    expect(text).not.toContain("lacks the required permissions");
+  });
+
   it("shows providers' messages only with --verbose, keys redacted, under a do-not-share warning", async () => {
     // Error bodies that echo the request headers (and so the key) back.
     const echo: Responder = (call) => json({ error: `bad key ${JSON.stringify(call.headers)} and also ${KEYS.TAVILY_API_KEY}` }, 401);
@@ -309,14 +388,14 @@ describe("check", () => {
     const { fetch } = mockFetch(routes);
 
     const text = io();
-    expect(await main(["check", "--verbose"], text.streams, { env: KEYS, fetch })).toBe(1);
+    expect(await main(["check", "--verbose"], text.streams, { env: ENV, fetch })).toBe(1);
     const json_ = io();
-    expect(await main(["check", "--json", "--verbose"], json_.streams, { env: KEYS, fetch })).toBe(1);
+    expect(await main(["check", "--json", "--verbose"], json_.streams, { env: ENV, fetch })).toBe(1);
 
     expect(text.out.join("").startsWith(`${VERBOSE_WARNING}\n`)).toBe(true);
     expect(text.out.join("")).toContain("provider said (not for sharing): bad key");
     const report = JSON.parse(json_.out.join(""));
-    expect(report).toMatchObject({ verbose: true, warning: VERBOSE_WARNING, failed: 18 });
+    expect(report).toMatchObject({ verbose: true, warning: VERBOSE_WARNING, failed: 21 });
     for (const output of [text.out.join(""), JSON.stringify(report)]) {
       expect(output).toContain("[redacted]");
       expectNoContent(output);
@@ -326,13 +405,13 @@ describe("check", () => {
   it("redacts even a very short key in --verbose output", async () => {
     const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: status(401, { error: "key abc is not valid" }) });
     const report = await runCheck({ env: { EXA_API_KEY: "abc" }, fetch, verbose: true });
-    expect(report.providers[0]?.calls[0]?.providerMessage).toBe("key [redacted] is not valid");
+    expect(report.providers.find((p) => p.provider === "exa")?.calls[0]?.providerMessage).toBe("key [redacted] is not valid");
   });
 
   it("cuts long provider messages in --verbose output", async () => {
     const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: status(500, { error: "x".repeat(2000) }) });
     const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch, verbose: true });
-    expect(report.providers[0]?.calls[0]?.providerMessage).toHaveLength(300);
+    expect(report.providers.find((p) => p.provider === "exa")?.calls[0]?.providerMessage).toHaveLength(300);
   });
 
   it("reports a fetch that throws as a network error, without its message", async () => {
@@ -343,7 +422,7 @@ describe("check", () => {
       },
     });
     const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch, verbose: true });
-    expect(report.providers[0]?.calls[0]).toMatchObject({ outcome: "network_error", providerMessage: "Could not reach the provider" });
+    expect(report.providers.find((p) => p.provider === "exa")?.calls[0]).toMatchObject({ outcome: "network_error", providerMessage: "Could not reach the provider" });
     expectNoContent(JSON.stringify(report));
   });
 
@@ -356,12 +435,12 @@ describe("check", () => {
     } as unknown as Response;
     const { fetch } = mockFetch({ ...success, [URLS.exaSearch]: () => broken });
     const report = await runCheck({ env: { EXA_API_KEY: "exa-key-1" }, fetch, verbose: true });
-    expect(report.providers[0]?.calls[0]).toMatchObject({
+    expect(report.providers.find((p) => p.provider === "exa")?.calls[0]).toMatchObject({
       ok: false,
       outcome: "provider_error",
       hint: "The adapter failed unexpectedly. Please open an issue with check --json.",
     });
-    expect(report.providers[0]?.calls[0]).not.toHaveProperty("providerMessage");
+    expect(report.providers.find((p) => p.provider === "exa")?.calls[0]).not.toHaveProperty("providerMessage");
     expectNoContent(JSON.stringify(report));
   });
 
@@ -376,7 +455,7 @@ describe("check", () => {
     expect(text).toContain("tavily (TAVILY_API_KEY, from the environment)");
     expect(text).toContain("linkup: skipped (no key: set LINKUP_API_KEY or run `programscape-router keys set linkup`)");
     expect(text).toContain("youcom: skipped (no key: set YDC_API_KEY or run `programscape-router keys set youcom`)");
-    expect(text).toContain("PASS: 3 of 3 calls passed; 6 providers skipped (no key).");
+    expect(text).toContain("PASS: 3 of 3 calls passed; 7 providers skipped (no key).");
     // Provider calls go to Tavily only; the one other call is the catalog read, carrying only that provider's id.
     const toProviders = calls.filter((call) => new URL(call.url).host !== "programscape.com");
     expect(toProviders.every((call) => new URL(call.url).host === "api.tavily.com")).toBe(true);
@@ -396,10 +475,10 @@ describe("check", () => {
   it("prints JSON with --json and exits 0 when every call passes", async () => {
     const { fetch } = mockFetch(success);
     const { streams, out } = io();
-    expect(await main(["check", "--json"], streams, { env: KEYS, fetch })).toBe(0);
+    expect(await main(["check", "--json"], streams, { env: ENV, fetch })).toBe(0);
     const report = JSON.parse(out.join(""));
-    expect(report).toMatchObject({ ok: true, attempted: 18, passed: 18, failed: 0 });
-    expect(report.providers.map((p: { provider: string }) => p.provider)).toEqual(["exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"]);
+    expect(report).toMatchObject({ ok: true, attempted: 21, passed: 21, failed: 0 });
+    expect(report.providers.map((p: { provider: string }) => p.provider)).toEqual(["brightdata", "exa", "firecrawl", "keenable", "linkup", "parallel", "tavily", "youcom"]);
     expectNoContent(out.join(""));
   });
 
@@ -409,7 +488,7 @@ describe("check", () => {
     const { fetch, calls } = mockFetch(success);
     const { streams } = io();
     const env = {
-      ...KEYS,
+      ...ENV,
       XDG_STATE_HOME: state,
       XDG_CONFIG_HOME: config,
       // A broken config stops every other command; check still runs, and since it can't tell whether the founder

@@ -38,6 +38,7 @@ Usage:
   programscape-router [mcp]                      Run the MCP server on stdio (default)
   programscape-router check [--json] [--verbose] One live search, scrape and balance read per key set
   programscape-router keys set <provider> [--stdin]  Store a key in the OS keychain, asked for at a hidden prompt
+                                                 (brightdata also sets up its zones; --search-zone, --scrape-zone)
   programscape-router keys list [--json]         Which keys are set and where from (never the keys)
   programscape-router keys remove <provider>     Delete a stored key from the OS keychain
   programscape-router status [--json] [--refresh]
@@ -49,10 +50,11 @@ Usage:
   programscape-router disconnect                 Revoke the connection and remove local tokens
   programscape-router --help | --version
 
-Keys are read from EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, LINKUP_API_KEY, PARALLEL_API_KEY,
-TAVILY_API_KEY and YDC_API_KEY, or, when a variable isn't set, from the OS keychain (see keys set).
-A variable wins over the keychain.
-Providers: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.
+Keys are read from BRIGHTDATA_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, KEENABLE_API_KEY, LINKUP_API_KEY,
+PARALLEL_API_KEY, TAVILY_API_KEY and YDC_API_KEY, or, when a variable isn't set, from the OS keychain (see keys
+set). A variable wins over the keychain. Bright Data's zones are saved in zones.json by keys set brightdata, or set
+in BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE.
+Providers: brightdata, exa, firecrawl, keenable, linkup, parallel, tavily, youcom.
 Find startup credits for these tools at https://programscape.com
 Without connect, the only call to Programscape is a read of its public catalog (which providers have a key set, at
 most once a day; "programscape": { "catalog": false } in config or PROGRAMSCAPE_ROUTER_CATALOG=off turns it off).
@@ -214,6 +216,8 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
       ...(options.promptOutput ? { promptOutput: options.promptOutput } : {}),
       ...(options.keyringLoader ? { keyringLoader: options.keyringLoader } : {}),
       ...(options.platform ? { platform: options.platform } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(options.cwd ? { cwd: options.cwd } : {}),
     });
     if (code === 0 && args[0] === "set") await introducePrograms(io, options, env, keys);
     return code;

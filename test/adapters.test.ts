@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ADAPTERS, type CallContext, ProviderCallError } from "../src/providers/index.js";
-import { URLS, fixture, json, mockFetch, ok, status } from "./helpers.js";
+import { requestJson } from "../src/providers/http.js";
+import { BRIGHTDATA_ZONE_URLS, URLS, brdHeaders, fixture, json, mockFetch, ok, status, type Responder } from "./helpers.js";
+import { createZone, listZones } from "../src/providers/brightdata.js";
 
 function ctx(fetch: CallContext["fetch"], key = "test-key"): CallContext {
   return { key, fetch, timeoutMs: 5000 };
@@ -15,6 +17,191 @@ async function failure(promise: Promise<unknown>): Promise<ProviderCallError> {
   }
   throw new Error("expected a ProviderCallError");
 }
+
+describe("Bright Data", () => {
+  const zones = { search: "programscape_serp", scrape: "web_unlocker1" };
+  const bd = (fetch: CallContext["fetch"]): CallContext => ({ key: "test-key", fetch, timeoutMs: 5000, zones });
+  const searchOnce = (fetch: CallContext["fetch"]) => ADAPTERS.brightdata.search!({ query: "startup credits" }, bd(fetch));
+  const scrapeOnce = (fetch: CallContext["fetch"]) => ADAPTERS.brightdata.scrape!({ url: "https://example.com/a" }, bd(fetch));
+
+  it("searches Google through the SERP zone, in English for the US, raw, and maps organic results", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.brightdataRequest]: ok(fixture("brightdata-search")) });
+    const results = await ADAPTERS.brightdata.search!({ query: "seed & SAFE?", maxResults: 5 }, bd(fetch));
+    expect(calls[0]).toMatchObject({
+      url: "https://api.brightdata.com/request",
+      method: "POST",
+      headers: { authorization: "Bearer test-key", "content-type": "application/json" },
+      body: {
+        zone: "programscape_serp",
+        url: "https://www.google.com/search?q=seed%20%26%20SAFE%3F&hl=en&gl=us&brd_json=1",
+        format: "raw",
+      },
+    });
+    expect(Object.keys(calls[0]?.body as object).sort()).toEqual(["format", "url", "zone"]);
+    expect(results).toEqual([
+      { title: "AWS Activate credits", url: "https://aws.amazon.com/startups/credits", snippet: "Get up to $100,000 in AWS credits for your startup." },
+      { title: "Google for Startups Cloud Program", url: "https://cloud.google.com/startup", snippet: "Credits and support for startups building on Google Cloud." },
+      { title: "A result without a description", url: "https://example.com/no-description" },
+    ]);
+  });
+
+  it("gives at most 10 results, one page, however many are asked for, and reads no organic list as none", async () => {
+    const organic = Array.from({ length: 12 }, (_, n) => ({ link: `https://example.com/${n}`, title: `R${n}`, rank: n + 1 }));
+    const { fetch, calls } = mockFetch({ [URLS.brightdataRequest]: [ok({ organic }), ok({ general: {} })] });
+    expect(await ADAPTERS.brightdata.search!({ query: "q", maxResults: 50 }, bd(fetch))).toHaveLength(10);
+    expect(await ADAPTERS.brightdata.search!({ query: "q", maxResults: 2 }, bd(fetch))).toEqual([]);
+    expect(calls).toHaveLength(2);
+    expect(JSON.stringify(calls)).not.toMatch(/start=|num=/);
+  });
+
+  it("reads a page through the Web Unlocker zone as markdown, with the requested URL and no title", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.brightdataRequest]: ok(fixture("brightdata-scrape")) });
+    const result = await scrapeOnce(fetch);
+    expect(calls[0]?.body).toEqual({ zone: "web_unlocker1", url: "https://example.com/a", format: "json", data_format: "markdown" });
+    expect(result).toEqual({ url: "https://example.com/a", markdown: "# Example Domain\n\nThis domain is for use in illustrative examples in documents." });
+  });
+
+  it("reads a target page's error status as a failed fetch, and a wrapper without a body string too", async () => {
+    for (const body of [{ status_code: 404, headers: {}, body: "Not found" }, { status_code: 200, headers: {} }]) {
+      const { fetch } = mockFetch({ [URLS.brightdataRequest]: ok(body) });
+      expect((await failure(scrapeOnce(fetch))).outcome).toBe("fetch_failed");
+    }
+    const { fetch } = mockFetch({ [URLS.brightdataRequest]: ok([1]) });
+    expect((await failure(scrapeOnce(fetch))).outcome).toBe("invalid_response");
+  });
+
+  it("reads failures Bright Data reports in the headers of a 200, as live", async () => {
+    // [headers, search outcome, scrape outcome, status, code]
+    const cases: Array<[Record<string, string>, string, string, number, string | undefined]> = [
+      [{ "x-brd-status-code": "502", "x-brd-error-code": "captcha", "x-brd-error": "redirect location was rejected" }, "provider_error", "fetch_failed", 502, "captcha"],
+      [{ "x-brd-status-code": "502", "x-brd-error-code": "reject_block" }, "provider_error", "fetch_failed", 502, "reject_block"],
+      [{ "x-brd-status-code": "429", "x-brd-error-code": "sr_rate_limit" }, "rate_limited", "rate_limited", 429, "sr_rate_limit"],
+      [{ "x-brd-error-code": "bucket_rate_limit" }, "rate_limited", "rate_limited", 200, "bucket_rate_limit"],
+      [{ "x-brd-status-code": "502", "x-brd-err-code": "client_10110", "x-brd-err-msg": "rate limit" }, "rate_limited", "rate_limited", 502, "client_10110"],
+      [{ "x-brd-status-code": "429" }, "rate_limited", "rate_limited", 429, undefined],
+      [{ "x-brd-status-code": "502", "x-brd-err-code": "client_10100", "x-brd-err-msg": "Zone has reached usage limit" }, "exhausted", "exhausted", 502, "client_10100"],
+      [{ "x-brd-status-code": "407", "x-brd-err-code": "client_10020", "x-brd-err-msg": "Account is suspended" }, "exhausted", "exhausted", 407, "client_10020"],
+      // A target page's own 401 or 403 is about the page, never the founder's key.
+      [{ "x-brd-status-code": "403" }, "provider_error", "fetch_failed", 403, undefined],
+    ];
+    for (const [headers, search, scrape, code, brdCode] of cases) {
+      for (const body of ["", JSON.stringify({ organic: [{ link: "https://x.example", title: "x" }] })]) {
+        const { fetch } = mockFetch({ [URLS.brightdataRequest]: brdHeaders(headers, body) });
+        expect(await failure(searchOnce(fetch))).toMatchObject({ outcome: search, status: code, code: brdCode, switchOff: false });
+        expect(await failure(scrapeOnce(fetch))).toMatchObject({ outcome: scrape, status: code, code: brdCode, switchOff: false });
+      }
+    }
+    const captcha = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "x-brd-status-code": "502", "x-brd-error-code": "captcha" }) });
+    expect((await failure(searchOnce(captcha.fetch))).fix).toBe(
+      "Bright Data couldn't complete this search (a captcha it couldn't get past); failed requests aren't billed. Try again; if it keeps happening, check the zone in Bright Data's dashboard.",
+    );
+    expect((await failure(scrapeOnce(captcha.fetch))).fix).toContain("Bright Data couldn't complete this page read");
+    // A success status in the header is a success.
+    const { fetch } = mockFetch({ [URLS.brightdataRequest]: () => json({ organic: [] }) });
+    expect(await searchOnce(fetch)).toEqual([]);
+    const okHeader = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "x-brd-status-code": "200" }, JSON.stringify({ organic: [] })) });
+    expect(await searchOnce(okHeader.fetch)).toEqual([]);
+  });
+
+  it("reads the failure inside a format-json wrapper's headers", async () => {
+    const wrapper = { status_code: 502, headers: { "X-Brd-Error-Code": "captcha", "x-brd-error": "redirect location was rejected" }, body: "" };
+    const { fetch } = mockFetch({ [URLS.brightdataRequest]: ok(wrapper) });
+    expect(await failure(scrapeOnce(fetch))).toMatchObject({ outcome: "fetch_failed", code: "captcha", status: 200 });
+    const rate = mockFetch({ [URLS.brightdataRequest]: ok({ status_code: 200, headers: { "x-brd-err-code": ["client_10110"] }, body: "# x" }) });
+    expect(await failure(scrapeOnce(rate.fetch))).toMatchObject({ outcome: "rate_limited", code: "client_10110" });
+  });
+
+  it("reads an unknown zone (HTTP 400, text/html) as a setting to fix that switches Bright Data off, not a bad request", async () => {
+    const { fetch } = mockFetch({
+      [URLS.brightdataRequest]: () => new Response('zone "programscape_serp" not found', { status: 400, headers: { "content-type": "text/html" } }),
+    });
+    const error = await failure(searchOnce(fetch));
+    expect(error).toMatchObject({
+      outcome: "provider_error",
+      status: 400,
+      switchOff: true,
+      fix: "Bright Data zone programscape_serp not found; run `programscape-router keys set brightdata` again.",
+    });
+    expect((await failure(scrapeOnce(fetch))).fix).toBe("Bright Data zone web_unlocker1 not found; run `programscape-router keys set brightdata` again.");
+  });
+
+  it("reads 401 plain text as a bad key, 429 as a rate limit, a validation 400 as a bad request, a 502 code by its code", async () => {
+    const cases: Array<[Responder, string, string]> = [
+      [() => new Response("Invalid token", { status: 401, headers: { "content-type": "text/plain" } }), "unauthorized", "unauthorized"],
+      [() => new Response("Auth method is not supported", { status: 401 }), "unauthorized", "unauthorized"],
+      [status(429, "Too many requests"), "rate_limited", "rate_limited"],
+      [status(400, { error: "Request validation failed", error_code: "validation" }), "bad_request", "bad_request"],
+      [() => new Response("", { status: 502, headers: { "x-brd-error-code": "navigation_timeout" } }), "provider_error", "fetch_failed"],
+      [() => new Response("", { status: 503 }), "server_error", "server_error"],
+    ];
+    for (const [responder, search, scrape] of cases) {
+      const { fetch } = mockFetch({ [URLS.brightdataRequest]: responder });
+      expect((await failure(searchOnce(fetch))).outcome).toBe(search);
+      expect((await failure(scrapeOnce(fetch))).outcome).toBe(scrape);
+    }
+    const plain = mockFetch({ [URLS.brightdataRequest]: () => new Response("Invalid token", { status: 401 }) });
+    expect((await failure(searchOnce(plain.fetch))).message).toBe("Invalid token");
+  });
+
+  it("says a capability isn't set up, without a call, when it has no zone", async () => {
+    const { fetch, calls } = mockFetch({});
+    const error = await failure(ADAPTERS.brightdata.search!({ query: "q" }, { key: "k", fetch, timeoutMs: 5000 }));
+    expect(error).toMatchObject({ outcome: "provider_error", fix: "Run `programscape-router keys set brightdata` to set up its zones." });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("reads the balance as Bright Data's paid balance in US dollars, with the note that free credits aren't in it", async () => {
+    const { fetch, calls } = mockFetch({ [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) });
+    const reading = await ADAPTERS.brightdata.balance!(bd(fetch));
+    expect(calls[0]).toMatchObject({ url: "https://api.brightdata.com/customer/balance", method: "GET", headers: { authorization: "Bearer test-key" } });
+    expect(reading.balances).toEqual([
+      { label: "Bright Data paid balance", kind: "credits", unit: "usd", remaining: 2, source: "provider", asOf: expect.any(String) },
+    ]);
+    expect(reading.note).toContain("Bright Data's paid balance in US dollars, as Bright Data reports it");
+    expect(reading.note).toContain("Free monthly credits aren't included: Bright Data doesn't report them.");
+  });
+
+  it("marks a $0 balance as shown only, so it never orders or syncs", async () => {
+    const { fetch } = mockFetch({ [URLS.brightdataBalance]: ok({ balance: 0, credit: 0, prepayment: 0, pending_costs: 0 }) });
+    const reading = await ADAPTERS.brightdata.balance!(bd(fetch));
+    expect(reading.balances[0]).toMatchObject({ remaining: 0, informational: true });
+    expect(reading.note).toContain("a $0 reading isn't used for the order or sent to your Programscape plan");
+  });
+
+  it("reads a balance 403 (a key without the permission) as unknown, never a bad key; a 401 is still a bad key", async () => {
+    const limited = mockFetch({ [URLS.brightdataBalance]: () => new Response("Your API key lacks the required permissions for this action", { status: 403 }) });
+    const reading = await ADAPTERS.brightdata.balance!(bd(limited.fetch));
+    expect(reading.balances).toEqual([]);
+    expect(reading.note).toContain("needs an Admin key");
+    const bad = mockFetch({ [URLS.brightdataBalance]: () => new Response("Invalid token", { status: 401 }) });
+    expect((await failure(ADAPTERS.brightdata.balance!(bd(bad.fetch)))).outcome).toBe("unauthorized");
+  });
+
+  it("lists zones by name and type, and reads a limited key's empty list as empty", async () => {
+    const { fetch, calls } = mockFetch({ [BRIGHTDATA_ZONE_URLS.list]: [ok(fixture("brightdata-zones")), ok([])] });
+    expect(await listZones(bd(fetch))).toEqual([
+      { name: "web_unlocker1", type: "unblocker" },
+      { name: "programscape_serp", type: "serp" },
+    ]);
+    expect(await listZones(bd(fetch))).toEqual([]);
+    expect(calls[0]).toMatchObject({ method: "GET", headers: { authorization: "Bearer test-key" } });
+  });
+
+  it("creates a zone with the documented body, and keeps nothing of the answer, which holds a password", async () => {
+    const answer = { zone: { name: "programscape_serp", password: ["zonepass-SECRET-123"] }, customer: "hl_userid_SECRET" };
+    const { fetch, calls } = mockFetch({ [BRIGHTDATA_ZONE_URLS.create]: ok(answer) });
+    expect(await createZone(bd(fetch), "programscape_serp", "search")).toBeUndefined();
+    expect(await createZone(bd(fetch), "programscape_unlocker", "scrape")).toBeUndefined();
+    expect(calls.map((call) => [call.method, call.body])).toEqual([
+      ["POST", { zone: { name: "programscape_serp", type: "unblocker" }, plan: { type: "unblocker", serp: true } }],
+      ["POST", { zone: { name: "programscape_unlocker", type: "unblocker" }, plan: { type: "unblocker" } }],
+    ]);
+    // A failure says only the status, never the answer's words.
+    const refused = mockFetch({ [BRIGHTDATA_ZONE_URLS.create]: status(403, { error: "no permission zonepass-SECRET-123" }) });
+    const error = await failure(createZone(bd(refused.fetch), "programscape_serp", "search"));
+    expect(error).toMatchObject({ outcome: "unauthorized", status: 403, message: "Bright Data did not create the zone (HTTP 403)" });
+  });
+});
 
 describe("Exa", () => {
   it("maps search requests and results", async () => {
@@ -567,6 +754,35 @@ describe("shared HTTP handling", () => {
       });
     const error = await failure(ADAPTERS.exa.search!({ query: "q" }, { key: "k", fetch, timeoutMs: 20 }));
     expect(error.outcome).toBe("timeout");
+  });
+
+  it("lets an adapter read headers and the raw text of every answer, 2xx included, and fail it", async () => {
+    const { fetch } = mockFetch({
+      "https://api.example.test/ok": () => new Response('{"fine":true}', { status: 200, headers: { "x-error": "captcha" } }),
+      "https://api.example.test/text": () => new Response('zone "x" not found', { status: 400, headers: { "content-type": "text/html" } }),
+    });
+    const seen: Array<{ status: number; header: string | null; body: unknown; text: string }> = [];
+    const inspect = (answer: { status: number; headers: Headers; body: unknown; text: string }) => {
+      seen.push({ status: answer.status, header: answer.headers.get("x-error"), body: answer.body, text: answer.text });
+      return answer.headers.get("x-error") ? new ProviderCallError("provider_error", "header said so", answer.status, "captcha") : undefined;
+    };
+    const failed = await failure(requestJson(ctx(fetch), "https://api.example.test/ok", { headers: {}, inspect }));
+    expect(failed).toMatchObject({ outcome: "provider_error", status: 200, code: "captcha", switchOff: false });
+    // A text body reaches the hook as text; returning undefined leaves the shared reading (400 is a bad request).
+    const plain = await failure(requestJson(ctx(fetch), "https://api.example.test/text", { headers: {}, inspect }));
+    expect(plain.outcome).toBe("bad_request");
+    expect(seen).toEqual([
+      { status: 200, header: "captcha", body: { fine: true }, text: '{"fine":true}' },
+      { status: 400, header: null, body: undefined, text: 'zone "x" not found' },
+    ]);
+    // Without a hook nothing changes.
+    expect(await requestJson(ctx(fetch), "https://api.example.test/ok", { headers: {} })).toEqual({ fine: true });
+  });
+
+  it("carries our own fix and the switch-off flag on a failure", () => {
+    const error = new ProviderCallError("provider_error", "m", 400, undefined, { fix: "Run setup.", switchOff: true });
+    expect(error).toMatchObject({ fix: "Run setup.", switchOff: true });
+    expect(new ProviderCallError("timeout", "m")).toMatchObject({ fix: undefined, switchOff: false });
   });
 
   it("every adapter cites its official docs", () => {

@@ -24,6 +24,7 @@ describe("public API", () => {
         "formatStatus",
         "loadConfig",
         "parseConfig",
+        "parseConfigWithNotes",
         "resolveKeys",
         "runCheck",
         "runMcpServer",

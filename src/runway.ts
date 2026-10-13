@@ -93,7 +93,7 @@ export function estimateRunway(readings: readonly Reading[], providerName: strin
 /** One estimate per live balance the provider reports now, from the readings of that same label and unit. */
 export function runwaysFor(providerName: string, provider: ProviderId, balances: readonly Balance[], readings: readonly Reading[]): RunwayEstimate[] {
   return balances.flatMap((balance): RunwayEstimate[] => {
-    if (balance.source !== "provider" || balance.kind !== "credits" || !balance.unit) return [];
+    if (balance.source !== "provider" || balance.kind !== "credits" || balance.informational || !balance.unit) return [];
     const mine = readings.filter((reading) => reading.provider === provider && reading.label === balance.label && reading.unit === balance.unit);
     const estimate = estimateRunway(mine, providerName, balance.endsOn);
     return estimate ? [estimate] : [];

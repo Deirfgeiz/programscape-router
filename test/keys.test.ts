@@ -85,6 +85,7 @@ describe("resolveKeys", () => {
     const resolved = await resolveKeys({ env: { EXA_API_KEY: "exa-from-env" } });
     expect(resolved.keys).toEqual({ exa: "exa-from-env", tavily: "tvly-from-keychain" });
     expect(resolved.sources).toEqual({
+      brightdata: "none",
       exa: "env",
       firecrawl: "none",
       keenable: "none",
@@ -229,7 +230,7 @@ describe("keys set", () => {
 
     const unknown = io();
     expect(await main(["keys", "set", "google", "--stdin"], unknown.streams, { env: {}, stdin: Readable.from(["x\n"]) as never })).toBe(2);
-    expect(unknown.err.join("")).toContain('"google" is not a provider this router knows. Use one of: exa, firecrawl, keenable, linkup, parallel, tavily, youcom.');
+    expect(unknown.err.join("")).toContain('"google" is not a provider this router knows. Use one of: brightdata, exa, firecrawl, keenable, linkup, parallel, tavily, youcom.');
     expect(fakeKeyring.store.size).toBe(0);
   });
 
@@ -348,7 +349,7 @@ describe("key sources in status and check", () => {
     expect(check.out.join("")).toContain("tavily (TAVILY_API_KEY, from the environment)");
     const checkJson = io();
     await main(["check", "--json"], checkJson.streams, { env, fetch });
-    expect(JSON.parse(checkJson.out.join("")).providers.map((p: { keySource: string }) => p.keySource)).toEqual(["keychain", "none", "none", "none", "none", "env", "none"]);
+    expect(JSON.parse(checkJson.out.join("")).providers.map((p: { keySource: string }) => p.keySource)).toEqual(["none", "keychain", "none", "none", "none", "none", "env", "none"]);
 
     for (const shown of [status.all(), text.all(), check.all(), checkJson.all()]) expect(shown).not.toContain("SECRET");
   });

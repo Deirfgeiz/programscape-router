@@ -1,5 +1,5 @@
 import { type CatalogOptions, type ProviderPrograms, defaultCatalogPath, programName, readPrograms, short } from "./catalog.js";
-import { type RouterConfig, loadConfig } from "./config.js";
+import { type RouterConfig, loadConfig, missingZones, zonesFor } from "./config.js";
 import { type KeySource, type ResolvedKeys, keysFromEnv } from "./keys.js";
 import { Ledger, defaultLedgerPath } from "./ledger.js";
 import { claimHeadsUps, defaultNoticesPath } from "./notices.js";
@@ -9,6 +9,7 @@ import { type BalanceSync, type ProgramscapeSyncStatus, type ProviderReading, ty
 import { Readings, defaultReadingsPath } from "./readings.js";
 import { DEFAULT_HEADS_UP_DAYS, type HeadsUpReason, type RunwayEstimate, foundersEndDates, headsUpFor, runwaysFor } from "./runway.js";
 import { ADAPTERS, type CallContext, type FetchLike, ProviderCallError, type ProviderAdapter, supports } from "./providers/index.js";
+import { searchTimeout } from "./providers/http.js";
 import {
   type Attempt,
   type Balance,
@@ -93,6 +94,8 @@ export interface RouterStatus {
   providers: ProviderStatus[];
   /** Why the OS keychain could not be read at startup, when a key was looked for there and it could not be. */
   keychainNote?: string;
+  /** What the router ignored in the config file (settings for a provider this version doesn't know). */
+  configNotes?: string[];
   order: Record<Capability, CapabilityOrder>;
   /** The opt-in balance sync to the founder's Programscape plan, from local files only (no network call). */
   programscape: ProgramscapeSyncStatus;
@@ -165,7 +168,6 @@ export class RouterError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
 const SCRAPE_TIMEOUT_MS = 60_000;
 const BALANCE_TIMEOUT_MS = 10_000;
 
@@ -196,6 +198,8 @@ export function createRouter(options: RouterOptions = {}): Router {
   const located = options.config ? { path: undefined, config: options.config } : loadConfig(env, options.cwd);
   const config = located.config;
   const configPath = located.path ?? null;
+  const configNotes = "notes" in located ? (located.notes ?? []) : [];
+  for (const note of configNotes) log(note);
   const ledgerPath = options.ledgerPath === false ? null : (options.ledgerPath ?? defaultLedgerPath(env));
   const ledger = ledgerPath ? new Ledger(ledgerPath, log) : undefined;
   const readingsPath = options.readingsPath === false ? null : (options.readingsPath ?? defaultReadingsPath(env));
@@ -234,16 +238,23 @@ export function createRouter(options: RouterOptions = {}): Router {
     return clean.length > 500 ? `${clean.slice(0, 497)}...` : clean;
   }
 
+  // Zones (Bright Data) are read once, at creation, like the keys.
+  const zones = new Map(PROVIDER_IDS.map((id) => [id, zonesFor(ADAPTERS[id], config, env)] as const));
+
   function context(id: ProviderId, timeoutMs: number): CallContext {
     const key = keys.get(id);
     if (!key) throw new Error(`no key for ${id}`);
-    return { key, fetch: fetchImpl, timeoutMs };
+    const zoneSet = zones.get(id) ?? {};
+    return { key, fetch: fetchImpl, timeoutMs, ...(Object.keys(zoneSet).length > 0 ? { zones: zoneSet } : {}) };
   }
 
-  function disable(id: ProviderId, status: number | undefined): void {
+  /** Switches a provider off for the session: its key was refused, or (with `fix`) a setting it needs is wrong. */
+  function disable(id: ProviderId, status: number | undefined, fix?: string): void {
     const adapter = ADAPTERS[id];
-    const reason = `${adapter.name} refused the key in ${adapter.envVar}${status ? ` (HTTP ${status})` : ""}; disabled for this session.`;
-    if (!disabled.has(id)) log(`${reason} Check the key and restart.`);
+    const reason = fix
+      ? `${fix} ${adapter.name} is switched off for this session.`
+      : `${adapter.name} refused the key in ${adapter.envVar}${status ? ` (HTTP ${status})` : ""}; disabled for this session.`;
+    if (!disabled.has(id)) log(fix ? reason : `${reason} Check the key and restart.`);
     disabled.set(id, reason);
   }
 
@@ -274,7 +285,7 @@ export function createRouter(options: RouterOptions = {}): Router {
     const read = (async (): Promise<BalanceCache> => {
       try {
         const reading = await adapter.balance!(context(id, BALANCE_TIMEOUT_MS));
-        const entry = { at: now().getTime(), balances: reading.balances };
+        const entry: BalanceCache = { at: now().getTime(), balances: reading.balances, ...(reading.note ? { note: reading.note } : {}) };
         balanceCache.set(id, entry);
         // Queued like the ledger: a readings problem never breaks a call.
         void readings?.record(id, reading.balances, now());
@@ -372,16 +383,22 @@ export function createRouter(options: RouterOptions = {}): Router {
   }
 
   function orderFor(capability: Capability, all: Map<ProviderId, ProviderStanding>): CapabilityOrder {
-    const candidates = PROVIDER_IDS.filter((id) => supports(ADAPTERS[id], capability)).map(
-      (id) => all.get(id) as ProviderStanding,
-    );
+    const candidates = PROVIDER_IDS.filter((id) => supports(ADAPTERS[id], capability)).map((id): ProviderStanding => {
+      const standing = all.get(id) as ProviderStanding;
+      const adapter = ADAPTERS[id];
+      // A key without the zone this capability needs (Bright Data) isn't set up for it: skipped, with the fix.
+      if (standing.enabled && !standing.disabled && missingZones(adapter, zones.get(id) ?? {}).includes(capability)) {
+        return { ...standing, disabled: `${adapter.name} has no ${capability === "search" ? "search" : "page-read"} zone set up. ${adapter.zoneFix ?? ""}`.trim() };
+      }
+      return standing;
+    });
     return computeOrder(capability, candidates, config.order?.[capability], now());
   }
 
   async function route<T>(
     capability: Capability,
     call: (adapter: ProviderAdapter, ctx: CallContext) => Promise<T>,
-    timeoutMs: number,
+    timeoutMs: (adapter: ProviderAdapter) => number,
   ): Promise<{ value: T; routing: Routing }> {
     const order = orderFor(capability, await standings(false));
     const tried: Attempt[] = [];
@@ -396,7 +413,7 @@ export function createRouter(options: RouterOptions = {}): Router {
       const id = entry.provider;
       const adapter = ADAPTERS[id];
       try {
-        const value = await call(adapter, context(id, timeoutMs));
+        const value = await call(adapter, context(id, timeoutMs(adapter)));
         tried.push({ provider: id, outcome: "ok" });
         void ledger?.record(id, capability, "ok", now());
         return { value, routing: { provider: id, reason: entry.reason, rule: order.rule, tried } };
@@ -411,6 +428,7 @@ export function createRouter(options: RouterOptions = {}): Router {
         });
         void ledger?.record(id, capability, failure.outcome, now());
         if (failure.outcome === "exhausted") markExhausted(id, failure.status);
+        else if (failure.switchOff) disable(id, failure.status, failure.fix);
         else if (failure.outcome === "unauthorized") disable(id, failure.status);
         else if (failure.outcome === "bad_request") {
           throw new RouterError(
@@ -440,7 +458,7 @@ export function createRouter(options: RouterOptions = {}): Router {
       const { value, routing } = await route<SearchResult[]>(
         "search",
         (adapter, ctx) => (adapter.search as NonNullable<ProviderAdapter["search"]>)({ ...request, query }, ctx),
-        timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        (adapter) => timeoutMs ?? searchTimeout(adapter),
       );
       // Each adapter asks for at most this many; trimming here keeps the cap even if a provider ignores it.
       return { results: value.slice(0, request.maxResults ?? 10), routing };
@@ -460,7 +478,7 @@ export function createRouter(options: RouterOptions = {}): Router {
       const { value, routing } = await route<ScrapeResult>(
         "scrape",
         (adapter, ctx) => (adapter.scrape as NonNullable<ProviderAdapter["scrape"]>)({ url }, ctx),
-        timeoutMs ?? SCRAPE_TIMEOUT_MS,
+        () => timeoutMs ?? SCRAPE_TIMEOUT_MS,
       );
       return { result: value, routing };
     },
@@ -504,6 +522,7 @@ export function createRouter(options: RouterOptions = {}): Router {
         ledgerPath,
         providers,
         ...(resolvedKeys.keychainNote ? { keychainNote: resolvedKeys.keychainNote } : {}),
+        ...(configNotes.length > 0 ? { configNotes } : {}),
         order: { search: orderFor("search", all), scrape: orderFor("scrape", all) },
         programscape: await balanceSync.status(),
         headsUp,

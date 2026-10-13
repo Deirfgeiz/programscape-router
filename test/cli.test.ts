@@ -48,7 +48,7 @@ describe("cli", () => {
     await main(["status", "--json"], streams, { env: {}, config: {}, ledgerPath: false });
     const parsed = JSON.parse(out.join(""));
     expect(parsed.order.search.rule).toBe("credits-ending-first");
-    expect(parsed.providers).toHaveLength(7);
+    expect(parsed.providers).toHaveLength(8);
   });
 
   it("searches, printing results to stdout and routing to stderr", async () => {

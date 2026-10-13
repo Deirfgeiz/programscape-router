@@ -37,6 +37,18 @@ export function canPrompt(input: PromptInput): boolean {
  * keys, are dropped. Only a newline is printed after the answer, never the answer.
  */
 export function readHidden(question: string, input: PromptInput, output: PromptOutput): Promise<string> {
+  return readLine(question, input, output, false);
+}
+
+/**
+ * Like readHidden, but shows what is typed: for answers that aren't secrets (a yes or no, a number from a list, a zone
+ * name). Rejects with PromptCancelledError on Ctrl-C.
+ */
+export function readVisible(question: string, input: PromptInput, output: PromptOutput): Promise<string> {
+  return readLine(question, input, output, true);
+}
+
+function readLine(question: string, input: PromptInput, output: PromptOutput, echo: boolean): Promise<string> {
   if (!canPrompt(input)) return Promise.reject(new Error("Not a terminal."));
   return new Promise((resolve, reject) => {
     const wasRaw = input.isRaw === true;
@@ -66,10 +78,12 @@ export function readHidden(question: string, input: PromptInput, output: PromptO
           continue;
         }
         if (char === "\u007f" || char === "\b") {
+          if (echo && value.length > 0) output.write("\b \b");
           value = Array.from(value).slice(0, -1).join("");
           continue;
         }
         if (char < " ") continue;
+        if (echo) output.write(char);
         value += char;
       }
     };

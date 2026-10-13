@@ -1,4 +1,4 @@
-import type { Balance, Outcome, ProviderId, ScrapeRequest, ScrapeResult, SearchRequest, SearchResult } from "../types.js";
+import type { Balance, Capability, Outcome, ProviderId, ScrapeRequest, ScrapeResult, SearchRequest, SearchResult } from "../types.js";
 
 /** A fetch implementation. The router never asks it to follow redirects. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -7,10 +7,17 @@ export interface CallContext {
   key: string;
   fetch: FetchLike;
   timeoutMs: number;
+  /**
+   * For a provider whose calls also name a zone in the founder's account (Bright Data): the zone each capability's
+   * requests go to, from its environment variable or config `providers.<id>.zones`. Zone names are not secrets.
+   */
+  zones?: Partial<Record<Capability, string>>;
 }
 
 export interface BalanceReading {
   balances: Balance[];
+  /** Our own words about the reading (what it leaves out, or why there is none), shown with it in `status`. */
+  note?: string;
 }
 
 export interface ProviderAdapter {
@@ -30,6 +37,30 @@ export interface ProviderAdapter {
   balance?: (ctx: CallContext) => Promise<BalanceReading>;
   /** How long a balance reading stays fresh, to respect the provider's limits on that endpoint. */
   balanceTtlMs?: number;
+  /**
+   * Set when each capability also needs a zone in the founder's account (Bright Data): the environment variable that
+   * names it, which wins over config `providers.<id>.zones`. Without its zone, a capability isn't set up: the router
+   * skips the provider for it and `check` says how to set it up.
+   */
+  zoneEnvVars?: Partial<Record<Capability, string>>;
+  /** What to run to set up a missing zone, in our own words. */
+  zoneFix?: string;
+  /**
+   * A longer search timeout for a provider whose searches are slow by design (Bright Data's took up to 27 s live).
+   * Used when config sets no timeoutMs, in place of the 30 s default; never more than the 60 s scrape default.
+   */
+  searchTimeoutMs?: number;
+}
+
+/** Our own words that go with a failure. Never the provider's text, so they are safe to show and share. */
+export interface CallErrorDetails {
+  /** What to do. `check` shows it in place of the hint for the failure class. */
+  fix?: string;
+  /**
+   * True when the provider can't serve another call this session because a setting is wrong (a zone that doesn't
+   * exist), not the key: the router switches it off for the session, saying `fix`, and tries the next provider.
+   */
+  switchOff?: boolean;
 }
 
 export class ProviderCallError extends Error {
@@ -37,13 +68,19 @@ export class ProviderCallError extends Error {
   readonly status: number | undefined;
   /** The provider's machine-readable error code (a tag or `code` field), when it gave one. Not yet allow-listed. */
   readonly code: string | undefined;
+  /** Our own words on what to do, when the adapter knows better than the failure class. */
+  readonly fix: string | undefined;
+  /** True when the router should switch the provider off for the session (see CallErrorDetails). */
+  readonly switchOff: boolean;
 
-  constructor(outcome: Exclude<Outcome, "ok">, message: string, status?: number, code?: string) {
+  constructor(outcome: Exclude<Outcome, "ok">, message: string, status?: number, code?: string, details: CallErrorDetails = {}) {
     super(message);
     this.name = "ProviderCallError";
     this.outcome = outcome;
     this.status = status;
     this.code = code;
+    this.fix = details.fix;
+    this.switchOff = details.switchOff === true;
   }
 }
 
@@ -68,6 +105,20 @@ export interface RequestOptions {
   errorMessage?: (body: unknown) => string | undefined;
   /** Pull the provider's machine-readable error code out of its error body. */
   errorCode?: (body: unknown) => string | undefined;
+  /**
+   * Reads every answer, 2xx included, before the shared handling: for a provider that reports failures in response
+   * headers or inside a 2xx body (Bright Data). Return an error to throw it, or undefined to carry on as usual.
+   */
+  inspect?: (answer: Answer) => ProviderCallError | undefined;
+}
+
+/** One answer as `inspect` sees it. `text` is the raw body, for a provider whose errors are plain text or HTML. */
+export interface Answer {
+  status: number;
+  headers: Headers;
+  /** The body parsed as JSON, or undefined when it is empty or not JSON. */
+  body: unknown;
+  text: string;
 }
 
 /** One JSON request with a timeout, never following redirects. Throws ProviderCallError on every failure. */
@@ -104,13 +155,17 @@ export async function requestJson(ctx: CallContext, url: string, options: Reques
   }
 
   let body: unknown;
+  let text = "";
   try {
-    const text = await response.text();
+    text = await response.text();
     body = text.length > 0 ? JSON.parse(text) : undefined;
   } catch (error) {
     if (isTimeout(error)) throw new ProviderCallError("timeout", `No answer within ${ctx.timeoutMs} ms`);
     body = undefined;
   }
+
+  const inspected = options.inspect?.({ status: response.status, headers: response.headers, body, text });
+  if (inspected) throw inspected;
 
   if (!response.ok) {
     const outcome = options.classify?.(response.status, body) ?? classifyStatus(response.status);
@@ -164,6 +219,11 @@ export function isoDate(value: unknown): string | undefined {
   if (!text) return undefined;
   const time = Date.parse(text);
   return Number.isNaN(time) ? undefined : new Date(time).toISOString();
+}
+
+/** 30 s, or longer for a provider whose searches are slow by design (Bright Data), up to the 60 s scrape limit. */
+export function searchTimeout(adapter: Pick<ProviderAdapter, "searchTimeoutMs">): number {
+  return Math.min(Math.max(30_000, adapter.searchTimeoutMs ?? 0), 60_000);
 }
 
 export function clampResults(requested: number | undefined, max: number): number {

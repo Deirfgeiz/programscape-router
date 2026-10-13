@@ -367,6 +367,42 @@ describe("sync", () => {
     expect(fake.toolCalls.map((call) => call.name)).toEqual(["my_plan"]);
   });
 
+  it("never sends Bright Data's $0, manually or automatically, and says why; sends an amount above $0", async () => {
+    const fake = fakeProgramscape({ kept: [{ id: "brightdata.free-tier", provider: "brightdata", approved: true }] });
+    const balances = [
+      ok({ balance: 0, credit: 0, prepayment: 0, pending_costs: 0 }),
+      ok({ balance: 0, credit: 0, prepayment: 0, pending_costs: 0 }),
+      ok({ balance: 2, credit: 0, prepayment: 0, pending_costs: 0 }),
+    ];
+    const providers = mockFetch({
+      [URLS.brightdataBalance]: balances,
+      [URLS.brightdataRequest]: ok(fixture("brightdata-search")),
+    });
+    const fetch = combine(fake.fetch, providers.fetch);
+    const env = { ...homes(), BRIGHTDATA_API_KEY: "brd-KEYSECRET-8", BRIGHTDATA_SERP_ZONE: "programscape_serp", BRIGHTDATA_UNLOCKER_ZONE: "web_unlocker1" };
+    await connect({ env, fetch, now: () => START, print: () => {}, openBrowser: fake.browser });
+
+    // Automatic: the search's balance read is $0, so no sync is due at all.
+    const auto = createRouter({ env, config: { programscape: { sync: "auto" } }, fetch, ledgerPath: false, log: () => {} });
+    await auto.search({ query: "q" });
+    await auto.flush();
+    expect(reports(fake)).toHaveLength(0);
+
+    // Manual: skipped, with the reason, and not a failure.
+    const out: string[] = [];
+    const code = await main(["sync"], { stdout: (t) => out.push(t), stderr: () => {} }, { env, config: {}, fetch, ledgerPath: false });
+    expect(code).toBe(0);
+    expect(out.join("")).toBe(
+      'brightdata: Not synced. Bright Data reported 0 usd for "Bright Data paid balance", which leaves out free credits it doesn\'t report, so it isn\'t sent to your plan.\n',
+    );
+    expect(reports(fake)).toHaveLength(0);
+
+    // Above $0, it goes like any live balance.
+    const results = await createRouter({ env, config: {}, fetch, ledgerPath: false, log: () => {} }).syncBalances();
+    expect(results[0]).toMatchObject({ provider: "brightdata", outcome: "synced", programId: "brightdata.free-tier" });
+    expect(reports(fake)).toEqual([{ programId: "brightdata.free-tier", amount: 2, unit: "usd", asOf: expect.any(String), source: "router" }]);
+  });
+
   it("refreshes an expired token, storing the rotated refresh token", async () => {
     const { fake, env, router, advance } = await connected();
     advance(61 * 60_000);
