@@ -6,7 +6,8 @@
  */
 import { type Keychain, KEY_ENV_VARS, KeychainUnavailableError, type KeyringLoader, type KeySource, openKeychain } from "./keys.js";
 import { PromptCancelledError, type PromptInput, canPrompt, readFirstLine, readHidden } from "./prompt.js";
-import { ADAPTERS } from "./providers/index.js";
+import { setUpBrightDataZones, takeZoneFlags } from "./cli-zones.js";
+import { ADAPTERS, type FetchLike } from "./providers/index.js";
 import { PROVIDER_IDS, type ProviderId } from "./types.js";
 
 export interface KeysIo {
@@ -22,10 +23,17 @@ export interface KeysOptions {
   promptOutput?: { write(text: string): unknown };
   keyringLoader?: KeyringLoader;
   platform?: NodeJS.Platform;
+  /** For `keys set brightdata`'s zone step, which calls Bright Data with the new key. Defaults to the global fetch. */
+  fetch?: FetchLike;
+  /** Where the config lookup starts, for saving zones. Defaults to process.cwd(). */
+  cwd?: string;
 }
 
 export const KEYS_USAGE = `Usage:
   programscape-router keys set <provider> [--stdin]   Store a key in the OS keychain (asked for at a hidden prompt)
+  programscape-router keys set brightdata [--stdin] [--search-zone <name>] [--scrape-zone <name>]
+                                                      Also set up its zones: found in your account, created only if
+                                                      you say yes, or named here
   programscape-router keys list [--json]              Which keys are set, and where from (never the keys)
   programscape-router keys remove <provider>          Delete a stored key from the OS keychain
 
@@ -58,11 +66,21 @@ async function keychainOr(io: KeysIo, options: KeysOptions): Promise<Keychain | 
   }
 }
 
-async function set(args: string[], io: KeysIo, options: KeysOptions): Promise<number> {
+async function set(argv: string[], io: KeysIo, options: KeysOptions): Promise<number> {
+  const args = [...argv];
+  const zoneFlags = takeZoneFlags(args);
   const fromStdin = args.includes("--stdin");
   const id = providerArg(args.find((arg) => !arg.startsWith("--")), io);
   if (!id) return 2;
   const adapter = ADAPTERS[id];
+  if (zoneFlags.error) {
+    io.stderr(`${zoneFlags.error}\n`);
+    return 2;
+  }
+  if (Object.keys(zoneFlags.given).length > 0 && !adapter.zoneEnvVars) {
+    io.stderr(`--search-zone and --scrape-zone are only for brightdata; ${adapter.name} has no zones.\n`);
+    return 2;
+  }
   const stdin = options.stdin ?? (process.stdin as unknown as NonNullable<KeysOptions["stdin"]>);
 
   if (!fromStdin && !canPrompt(stdin)) {
@@ -119,8 +137,25 @@ async function set(args: string[], io: KeysIo, options: KeysOptions): Promise<nu
   if (envSet(options.env, id)) {
     io.stdout(`Note: ${adapter.envVar} is also set in this environment, and the environment wins over the keychain.\n`);
   }
+  let code = 0;
+  if (id === "brightdata") {
+    code = await setUpBrightDataZones(io, {
+      key,
+      env: options.env,
+      cwd: options.cwd ?? process.cwd(),
+      fetch: options.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+      given: zoneFlags.given,
+      ...(fromStdin ? {} : { terminal: { input: stdin, output: options.promptOutput ?? process.stderr } }),
+    }).catch((error: unknown) => {
+      if (error instanceof PromptCancelledError) {
+        io.stderr("Cancelled. The key is saved; run `programscape-router keys set brightdata` again to set up its zones.\n");
+        return 1;
+      }
+      throw error;
+    });
+  }
   io.stdout(`Run \`programscape-router check\` to try it.\n`);
-  return 0;
+  return code;
 }
 
 interface ListEntry {

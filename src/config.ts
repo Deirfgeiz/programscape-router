@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { configDir } from "./paths.js";
 import { z } from "zod";
 import { ADAPTERS, type ProviderAdapter } from "./providers/index.js";
@@ -180,6 +180,41 @@ export function zonesFor(
 export function missingZones(adapter: ProviderAdapter, zones: Partial<Record<Capability, string>>): Capability[] {
   if (!adapter.zoneEnvVars) return [];
   return CAPABILITIES.filter((capability) => (capability === "search" ? adapter.search : adapter.scrape) !== undefined && !zones[capability]);
+}
+
+/**
+ * Saves zone names (never a key) in `providers.<id>.zones` of the config file in use, or in a new config.json in the
+ * config folder when there is none. Zones already there for other capabilities are kept. The file is checked against
+ * the schema before it is written, and written atomically. Returns its path. Throws ConfigError.
+ */
+export function saveZones(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  id: ProviderId,
+  zones: Partial<Record<Capability, string>>,
+): string {
+  const path = configCandidates(env, cwd).find((candidate) => existsSync(candidate)) ?? join(configDir(env), "config.json");
+  let raw: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      throw new ConfigError(`${path} is not valid JSON, so the zones weren't saved: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ConfigError(`${path} is not a JSON object, so the zones weren't saved.`);
+    raw = parsed as Record<string, unknown>;
+  }
+  const providers = (typeof raw.providers === "object" && raw.providers !== null ? raw.providers : {}) as Record<string, Record<string, unknown>>;
+  const current = providers[id] ?? {};
+  const existing = (typeof current.zones === "object" && current.zones !== null ? current.zones : {}) as Record<string, unknown>;
+  const next = { ...raw, providers: { ...providers, [id]: { ...current, zones: { ...existing, ...zones } } } };
+  parseConfig(next, path);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = `${path}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`);
+  renameSync(temp, path);
+  return path;
 }
 
 export function providerSettingsFor(config: RouterConfig, id: ProviderId) {

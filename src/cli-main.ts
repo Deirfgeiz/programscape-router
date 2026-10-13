@@ -214,6 +214,8 @@ export async function main(argv: string[], io: CliIo, options: CliOptions = {}):
       ...(options.promptOutput ? { promptOutput: options.promptOutput } : {}),
       ...(options.keyringLoader ? { keyringLoader: options.keyringLoader } : {}),
       ...(options.platform ? { platform: options.platform } : {}),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      ...(options.cwd ? { cwd: options.cwd } : {}),
     });
     if (code === 0 && args[0] === "set") await introducePrograms(io, options, env, keys);
     return code;
