@@ -43,6 +43,7 @@ its source file.
 
 | Provider | Key | Search | Scrape | Balance read live |
 |---|---|---|---|---|
+| Bright Data | `BRIGHTDATA_API_KEY`, plus two zones (see below) | `/request`, Google through your SERP API zone | `/request`, through your Web Unlocker API zone | Yes: `/customer/balance`, the paid balance in US dollars (free monthly credits not included) |
 | Exa | `EXA_API_KEY` | `/search` | `/contents` | No public endpoint; add your credits in config |
 | Firecrawl | `FIRECRAWL_API_KEY` | `/v2/search` | `/v2/scrape` | Yes: `/v2/team/credit-usage`, including when the billing period ends |
 | Keenable | `KEENABLE_API_KEY` | `/v1/search` | `/v1/fetch` | No public endpoint; add your credits in config |
@@ -71,6 +72,42 @@ their pages before you count on them.
   keeps it on for what the key can do. You.com's API Acceptable Use Policy forbids storing its results for re-use,
   and the router stores none (it caches no provider's results).
 
+### Bright Data (new in 1.2)
+
+Checked October 12, 2026, against Bright Data's docs and live answers on a founder's own account.
+
+- **Key.** In Bright Data's control panel, open **Account settings**, then **Users and API keys**
+  ([brightdata.com/cp/setting/users](https://brightdata.com/cp/setting/users)). Bright Data creates a default key
+  with each account. Bright Data's [free-tier page](https://docs.brightdata.com/general/account/billing-and-pricing/free-tier)
+  says every account gets 5,000 free credits a month (one credit is one search or one page read), with no credit card;
+  they reset on the 1st and don't roll over.
+- **Zones.** Every Bright Data call names a *zone* in your account as well as the key: a SERP API zone for search
+  and a Web Unlocker API zone for page reads. `keys set brightdata` sets them up after it saves the key. It lists
+  your account's zones and takes the SERP one and the Web Unlocker one (it asks which, by number, when you have
+  several of a kind). When one is missing, it asks: *Create programscape_serp (search) / programscape_unlocker (page
+  reads) in your Bright Data account? Free-tier credits cover them; nothing is bought. [y/N]*. Nothing is created
+  unless you answer yes. If it can't list or create them, it asks for the names: each zone's name is at the top of
+  its page in Bright Data, under **Web Access API**. Zone names aren't secrets, so they go in your config file
+  (`providers.brightdata.zones`); `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` override them. In a script,
+  `keys set brightdata --stdin --search-zone <name> --scrape-zone <name>` asks nothing and creates nothing.
+  Without its zone, Bright Data is skipped for that capability, and `check` and `status` say how to set it up.
+- **Which key you need.** Listing and creating zones and reading the balance need an **Admin** key. Searches and
+  page reads work with a narrower key. With a narrower key, `keys set` asks you for the zone names (Bright Data lists
+  no zones for it), and the balance shows as unknown; Bright Data stays on.
+- **Search** is Google, in English for the US, one page: at most 10 results (Google returns about 10 a page, and
+  each further page would be another billed request). Searches took 2 to 27 seconds when checked, so Bright Data
+  gets 60 seconds per search instead of 30, unless you set `timeoutMs`. **Page reads** come back as markdown, with
+  no title.
+- **Balance.** The router shows the balance Bright Data's API reports, labelled *Bright Data paid balance* in US
+  dollars. It leaves out your free monthly credits, which Bright Data doesn't report, and it may differ from the
+  account balance on Bright Data's dashboard. Above $0 it counts like any live balance (in the order, the runway and
+  the sync). At $0 it is shown only: it never moves Bright Data in the order and is never sent to your Programscape
+  plan, since free credits may still be left.
+- **Failures inside a 200.** Bright Data often answers HTTP 200 and puts the real result in its `x-brd-*` headers.
+  The router reads those: a captcha or another unlock failure moves on to the next provider for that call (failed
+  requests aren't billed), a rate limit is a rate limit, and `client_10100` ("Zone has reached usage limit") or
+  `client_10020` ("Account is suspended") counts as spent. Those last two aren't confirmed live yet.
+
 ## Keep your keys safe
 
 Your provider keys work like passwords: anyone holding one can spend that account's credits. Store them somewhere
@@ -87,7 +124,8 @@ npx @programscape/router keys set firecrawl
 npx @programscape/router keys list            # which keys are set and where from; never the keys themselves
 ```
 
-Providers are `exa`, `firecrawl`, `keenable`, `linkup`, `parallel`, `tavily` and `youcom`. That's all: the router
+Providers are `brightdata`, `exa`, `firecrawl`, `keenable`, `linkup`, `parallel`, `tavily` and `youcom` (`keys set
+brightdata` also sets up its zones; see [Bright Data](#bright-data-new-in-12)). That's all: the router
 finds the keys itself, so your agent's config holds none (see [Add it to your agent](#add-it-to-your-agent)).
 `keys remove tavily` deletes one. Keys are stored under service `programscape-router`, with the variable name
 (such as `TAVILY_API_KEY`) as the account, so you can also find them in Keychain Access, Credential Manager (as
@@ -110,6 +148,7 @@ tavily --stdin`.
    **Copy Secret Reference**.
 
    ```bash
+   BRIGHTDATA_API_KEY=op://Private/Bright Data/credential
    EXA_API_KEY=op://Private/Exa/credential
    FIRECRAWL_API_KEY=op://Private/Firecrawl/credential
    KEENABLE_API_KEY=op://Private/Keenable/credential
@@ -209,7 +248,8 @@ npx @programscape/router scrape https://example.com
 ```
 
 `check` makes one small search (`"startup credits"`, up to 3 results) and one scrape (`https://example.com`) with
-each key that is set, and reads the balance from Firecrawl, Linkup, Tavily and You.com. It calls each provider
+each key that is set, and reads the balance from Bright Data, Firecrawl, Linkup, Tavily and You.com. Bright Data
+without its zones is reported as not set up, with the command that sets it up, rather than as a failed call. It calls each provider
 directly, with no routing or failover, so every key is tested on its own. It prints, per call, ok or the failure class (see
 [Troubleshooting](#troubleshooting)), the provider's HTTP status and documented error code if it gave one, what to do
 next, the latency, and how many results or characters came back:
@@ -432,7 +472,8 @@ Set an order per capability in config. Only the providers you list are used, in 
 
 ## Runway and the heads-up
 
-Each time the router reads a live balance (Firecrawl, Linkup, Tavily and You.com publish one), it keeps the numbers in
+Each time the router reads a live balance (Bright Data, Firecrawl, Linkup, Tavily and You.com publish one; Bright Data's
+only above $0), it keeps the numbers in
 [`readings.json`](#local-files). From those readings it works out, on your machine, how long each balance lasts at your
 recent pace:
 
@@ -516,9 +557,10 @@ Config is optional. The router looks in this order:
 |---|---|
 | `order.search`, `order.scrape` | Your order. Leave it out to use credits ending first. |
 | `providers.<id>.credits[]` | Credits you hold. `label`, `expiresOn` (YYYY-MM-DD, usable through that day, UTC), `remaining`, `award`, `unit`. All optional; what you leave out stays unknown. |
+| `providers.brightdata.zones` | `{ "search": "<SERP API zone>", "scrape": "<Web Unlocker API zone>" }`: the zones in your Bright Data account. `keys set brightdata` fills it in. `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` win over it. Only Bright Data takes zones. |
 | `providers.<id>.paid: true` | You pay as you go with this provider; once its known credits are spent, it goes last. |
 | `providers.<id>.paid: false` | You don't pay with this provider; once its known credits are spent, it is skipped. |
-| `timeoutMs` | Per-call timeout (default 30 s for search, 60 s for scrape). |
+| `timeoutMs` | Per-call timeout (default 30 s for search, 60 s for scrape; 60 s for a Bright Data search). |
 | `programscape.sync` | `"manual"` (the default: only when you run `programscape-router sync`) or `"auto"`. Does nothing until you run `connect`. |
 | `programscape.catalog` | `false` turns off the read of Programscape's public catalog, and every mention of programs (see [Programs that can add more](#programs-that-can-add-more)). On by default. |
 | `headsUp.days` | The [heads-up](#runway-and-the-heads-up) threshold, in days (default 30). `0` turns the heads-up off. |
@@ -562,7 +604,8 @@ local sync record. The plan is read on every sync, manual or automatic, so run `
 you mark a program approved or change its date. `disconnect` deletes the record, and the dates with it.
 
 **Each balance report.** For each provider whose balance the router reads live from the provider's own endpoint
-(Firecrawl's remaining credits, Linkup's and You.com's dollar balances, Tavily's plan credits), and only for a
+(Firecrawl's remaining credits, Bright Data's paid balance above $0, Linkup's and You.com's dollar balances, Tavily's
+plan credits), and only for a
 program you kept on your plan that shows as approved, it calls `report_balance` with exactly these five fields, and
 a sixth, `estimate`, when the router has a [runway estimate](#runway-and-the-heads-up) for that balance:
 
@@ -695,10 +738,11 @@ search or scrape, and if it fails it says so once on stderr and your calls carry
 
 | What the provider says | What the router does |
 |---|---|
-| 402, or its documented "out of credits" error (Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS`, Linkup 429 `INSUFFICIENT_FUNDS_CREDITS` or `EXCEED_BUDGET_LIMIT`) | Marks it spent until its billing period ends (if known) or for the rest of the session, and tries the next |
-| 429 rate limit, 5xx, timeout, network error, a feature not on your plan (Exa `FEATURE_DISABLED`, You.com 403 `Missing required scopes`) | Tries the next provider for this call; doesn't mark it spent |
-| Couldn't fetch that page (including Linkup's `FETCH_*` 400s), or refused that content | Tries the next provider for this call |
+| 402, or its documented "out of credits" error (Tavily 432/433, Firecrawl `insufficient_credits`, Exa `NO_MORE_CREDITS`, Linkup 429 `INSUFFICIENT_FUNDS_CREDITS` or `EXCEED_BUDGET_LIMIT`, Bright Data `client_10100` or `client_10020`, not yet confirmed live) | Marks it spent until its billing period ends (if known) or for the rest of the session, and tries the next |
+| 429 rate limit (including Bright Data's `sr_rate_limit`, `bucket_rate_limit` and `client_10110`), 5xx, timeout, network error, a feature not on your plan (Exa `FEATURE_DISABLED`, You.com 403 `Missing required scopes`), a Bright Data search that came back with a captcha or another unlock failure | Tries the next provider for this call; doesn't mark it spent |
+| Couldn't fetch that page (including Linkup's `FETCH_*` 400s, and Bright Data's unlock failures or the page's own error status), or refused that content | Tries the next provider for this call |
 | 401 or 403 (bad, disabled or revoked key), or Linkup's 402 (it asks for payment only when no key arrived) | Switches the provider off for the session, says so on stderr, and tries the next |
+| Bright Data says a zone isn't found | Says which zone, switches Bright Data off for the session (like a bad key) and tries the next; run `keys set brightdata` again |
 | 400 or 422 (the request itself was wrong) | Returns the error to you without trying anyone else |
 
 ## Local files
@@ -744,12 +788,26 @@ of these classes:
 | `unauthorized` | 401 or 403 (Keenable also uses 400 for a malformed key; Linkup answers 402 when it didn't take a key): the key is wrong, disabled or revoked. | Copy the key again from the provider's dashboard and store it again (`keys set <provider>`, or the variable `check` names), then restart your MCP client so it picks it up. |
 | `bad_request` | 400 or 422: the provider rejected the request itself. | Run `check --verbose` and read the message (don't share it). If it says a field is wrong, the provider's API has probably changed: please open an issue with the `check --json` output. |
 | `server_error` | 5xx: the provider is having trouble. | Try again later. |
-| `timeout` | No answer within the timeout (30 s for search, 60 s for scrape, 10 s for a balance read; `timeoutMs` in config). | Try again; if it keeps happening, raise `timeoutMs`. |
+| `timeout` | No answer within the timeout (30 s for search, 60 s for scrape and for a Bright Data search, 10 s for a balance read; `timeoutMs` in config). | Try again; if it keeps happening, raise `timeoutMs`. |
 | `network_error` | The provider couldn't be reached at all. | Check your connection, proxy or firewall. |
 | `fetch_failed` | The provider answered, but couldn't fetch that page (Linkup says so with a `FETCH_*` code on a 400). | Try another page; the router tries the next provider for that call. |
 | `rejected` | The provider refused that content on policy grounds (Exa `PROHIBITED_CONTENT`). | Nothing is wrong with the key; the router tries the next provider. |
 | `invalid_response` | A 2xx answer in a shape the adapter couldn't read. | The provider's API has probably changed: please open an issue with the `check --json` output. |
 | `provider_error` | Any other answer, including a redirect (never followed, so your key stays with the provider) or a feature not on your plan (Exa `FEATURE_DISABLED`, You.com 403 `Missing required scopes`: the key has no scope for that endpoint; turn it on for the key in You.com's platform, or let the router use another provider for it). | Run `check --verbose` and read the provider's message (don't share it). |
+
+Bright Data:
+
+- **"Bright Data zone x not found"** (`provider_error`, HTTP 400). The zone in your config or environment isn't in
+  your account (it was renamed or deleted, or the name is mistyped). Bright Data is switched off until you restart.
+  Run `programscape-router keys set brightdata` again, or fix `BRIGHTDATA_SERP_ZONE` / `BRIGHTDATA_UNLOCKER_ZONE`.
+- **"not set up"** in `check`, or *Bright Data has no search zone set up* in `status`. Run `keys set brightdata`.
+- **`captcha`** (`provider_error` for search, `fetch_failed` for a page). Google or the site asked for a captcha that
+  Bright Data couldn't get past. It isn't billed, and the router tries the next provider. If every search does it,
+  check the zone in Bright Data's dashboard.
+- **Balance not available with this key.** Bright Data reads the balance only for an Admin key; with another, it's
+  shown as unknown and Bright Data stays on for searches and page reads. To see it, store an Admin key.
+- **The balance doesn't match the dashboard.** The router shows what Bright Data's API reports as `balance`, which
+  may differ from the account balance on the dashboard, and never includes your free monthly credits.
 
 If `keys set` says no keychain is available, the router can't reach your system's password store (most often a
 Linux machine without a desktop session). Keys in environment variables still work: use 1Password, another
@@ -769,6 +827,8 @@ result or page content (see [Quick check](#quick-check)). Don't paste `check --v
 - No combined credit total. Each balance is shown on its own, in its own unit.
 - It doesn't create accounts, keep your keys anywhere but your environment or your OS keychain, or proxy through a
   server.
+- It changes nothing in your provider accounts, except a Bright Data zone that `keys set brightdata` creates when you
+  answer yes.
 
 ## As a library
 

@@ -4,6 +4,54 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
+## 1.2.0 (unreleased)
+
+Bright Data: Google search and page reads through zones in the founder's own account, and its paid balance. Refs #5.
+Built on Bright Data's docs and live answers on a founder's account (October 12, 2026), which win where they differ.
+
+### Added
+
+- **Bright Data** (`brightdata`, `BRIGHTDATA_API_KEY`, `Authorization: Bearer`). Search: `POST /request` in a SERP
+  API zone with a Google URL (`hl=en&gl=us&brd_json=1`, `format: "raw"`), organic results mapped to title, url and
+  snippet, at most 10 (one page; Google retired `num`). Page reads: `POST /request` in a Web Unlocker API zone
+  (`format: "json"`, `data_format: "markdown"`), with the requested URL and no title; a target status of 400 or more
+  is `fetch_failed`. A Bright Data search gets 60 s instead of 30 (live searches took 2 to 27 s) unless config sets
+  `timeoutMs`.
+- **Zones.** `keys set brightdata` saves the key, then lists the account's zones and takes the `serp` and
+  `unblocker` ones (asking by number when there are several of a kind). For a missing one it asks *Create
+  programscape_serp (search) / programscape_unlocker (page reads) in your Bright Data account? Free-tier credits cover
+  them; nothing is bought. [y/N]* and creates it only on yes (Dave, October 12: "Find, then offer to create"). An empty
+  list (what a key without Admin permission gets), a refused create (it explains the Admin key and the dashboard) or a
+  no leads to asking for the names, with where to find them. Nothing of the create answer, which holds the zone's
+  password, is read or shown. With `--stdin` nothing is asked or created: `--search-zone` and `--scrape-zone` name the
+  zones, and the list fills one in only when it has exactly one of its kind.
+- Config `providers.brightdata.zones: { search, scrape }` (only Bright Data takes zones), saved by `keys set` into the
+  config file in use or a new `config.json`. `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` win over it. Without
+  its zone, Bright Data is skipped for that capability with the fix; `check` reports it as not set up
+  (`providers[].skipped`, or `providers[].notSetUp` for one of the two), not as a failed call.
+- **Failures inside a 200.** Any `x-brd-error-code` or `x-brd-err-code`, or an `x-brd-status-code` of 400 or more,
+  in the response headers or inside a `format: "json"` wrapper's `headers`, fails the call: unlock failures such as
+  `captcha` are `provider_error` for search and `fetch_failed` for a page (failover, Bright Data stays on);
+  `sr_rate_limit`, `bucket_rate_limit`, `client_10110` and 429 are `rate_limited`; `client_10100` ("Zone has reached
+  usage limit") and `client_10020` ("Account is suspended") are `exhausted` (not yet confirmed live). A target page's
+  own 401 or 403 is never read as a bad key; Bright Data's own 401 is.
+- **Unknown zone.** Bright Data's HTTP 400 `zone "x" not found` reads as "Bright Data zone x not found; run
+  `programscape-router keys set brightdata` again": Bright Data is switched off for the session (like a bad key) and
+  the router fails over, rather than stopping as on a bad request.
+- **Balance.** `GET /customer/balance`, shown as *Bright Data paid balance* in US dollars, with the note that free
+  monthly credits aren't included (Bright Data doesn't report them) and that it may differ from the dashboard. Above
+  $0 it orders, counts toward the runway and syncs like any live balance; at $0 it is shown only, never ordered on and
+  never sent to the Programscape plan (Dave, October 12: "Show it, never sync a $0"). A 403 (a key without Admin
+  permission) is an unknown balance, never a bad key.
+- Types: `Balance.informational` (shown only: never ordered on, never in a runway, never synced), the
+  `brightdata` provider id, `CheckProvider.notSetUp` and `CheckCall.note` (our own words about a balance reading).
+
+### Changed
+
+- Adapters can read response headers and the raw body of every answer, 2xx included (`inspect`), and a failure can
+  carry our own fix words (shown by `check` in place of the class hint) and switch a provider off for the session
+  over a wrong setting. `sync` reports a shown-only balance as skipped, with the reason.
+
 ## 1.1.0 (October 12, 2026)
 
 Two new providers, Linkup and You.com, and "extend before they end": a runway estimate, a heads-up while there's

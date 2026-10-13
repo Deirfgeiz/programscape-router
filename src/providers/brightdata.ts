@@ -120,7 +120,11 @@ export function brdFailure(capability: Capability, header: HeaderLookup, httpSta
   else if ((code && RATE_CODES.has(code)) || failedStatus === 429) outcome = "rate_limited";
   // Anything else here is about this search or page, never the key: an outer 401 is the only bad key.
   else outcome = capability === "search" ? "provider_error" : "fetch_failed";
-  return new ProviderCallError(outcome, message, status, code);
+  const fix =
+    outcome === "provider_error" || outcome === "fetch_failed"
+      ? `Bright Data couldn't complete this ${capability === "search" ? "search" : "page read"}${code === "captcha" ? " (a captcha it couldn't get past)" : ""}; failed requests aren't billed. Try again; if it keeps happening, check the zone in Bright Data's dashboard.`
+      : undefined;
+  return new ProviderCallError(outcome, message, status, code, fix ? { fix } : {});
 }
 
 /** Reads every /request answer: the unknown zone, the outer error statuses, and failures inside a 200. */

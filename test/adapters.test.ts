@@ -91,6 +91,11 @@ describe("Bright Data", () => {
         expect(await failure(scrapeOnce(fetch))).toMatchObject({ outcome: scrape, status: code, code: brdCode, switchOff: false });
       }
     }
+    const captcha = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "x-brd-status-code": "502", "x-brd-error-code": "captcha" }) });
+    expect((await failure(searchOnce(captcha.fetch))).fix).toBe(
+      "Bright Data couldn't complete this search (a captcha it couldn't get past); failed requests aren't billed. Try again; if it keeps happening, check the zone in Bright Data's dashboard.",
+    );
+    expect((await failure(scrapeOnce(captcha.fetch))).fix).toContain("Bright Data couldn't complete this page read");
     // A success status in the header is a success.
     const { fetch } = mockFetch({ [URLS.brightdataRequest]: () => json({ organic: [] }) });
     expect(await searchOnce(fetch)).toEqual([]);

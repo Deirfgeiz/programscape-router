@@ -226,6 +226,8 @@ describe("check", () => {
     expect(outcome("youcom", "search")).toMatchObject({ outcome: "exhausted", status: 402 });
     expect(outcome("youcom", "search")).not.toHaveProperty("code");
     expect(outcome("brightdata", "search")).toMatchObject({ outcome: "exhausted", status: 502, code: "client_10100" });
+    // Spent credits keep the class hint; an unlock failure gets its own words.
+    expect(outcome("brightdata", "search")?.hint).toBe(CHECK_HINTS.exhausted);
     expect(report.failed).toBe(7);
     expect(JSON.stringify(report)).not.toContain("usage limit");
     // The providers' own words stay out of the default report.
