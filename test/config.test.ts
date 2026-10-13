@@ -1,8 +1,8 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, parseConfig, zonesFor } from "../src/config.js";
+import { ConfigError, loadConfig, parseConfig, readZonesFile, saveZones, zonesFor, zonesPath } from "../src/config.js";
 import { ADAPTERS } from "../src/providers/index.js";
 
 const README_EXAMPLE = {
@@ -47,6 +47,32 @@ describe("config validation", () => {
     expect(message({ providers: { tavily: { zones: { search: "x" } } } })).toContain("providers.tavily.zones: Tavily has no zones; only brightdata takes them.");
     expect(message({ providers: { brightdata: { zones: { search: "bad name!" } } } })).toContain("providers.brightdata.zones.search: Use the zone's name as Bright Data shows it");
     expect(message({ providers: { brightdata: { zones: { crawl: "x" } } } })).toContain("providers.brightdata.zones");
+  });
+
+  it("reads each zone from its environment variable, then config.json, then zones.json", () => {
+    const env = { XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "psr-zones-file-")) };
+    expect(zonesFor(ADAPTERS.brightdata, {}, env)).toEqual({});
+    const path = saveZones(env, "brightdata", { search: "file_serp", scrape: "file_unlocker" });
+    expect(path).toBe(join(env.XDG_CONFIG_HOME, "programscape-router", "zones.json"));
+    expect(path).toBe(zonesPath(env));
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ version: 1, brightdata: { search: "file_serp", scrape: "file_unlocker" } });
+    expect(zonesFor(ADAPTERS.brightdata, {}, env)).toEqual({ search: "file_serp", scrape: "file_unlocker" });
+    const config = { providers: { brightdata: { zones: { search: "config_serp" } } } };
+    expect(zonesFor(ADAPTERS.brightdata, config, env)).toEqual({ search: "config_serp", scrape: "file_unlocker" });
+    expect(zonesFor(ADAPTERS.brightdata, config, { ...env, BRIGHTDATA_SERP_ZONE: "env_serp", BRIGHTDATA_UNLOCKER_ZONE: "env_unlocker" })).toEqual({
+      search: "env_serp",
+      scrape: "env_unlocker",
+    });
+    // Saving one capability keeps the other; a broken file counts as none and is written fresh.
+    saveZones(env, "brightdata", { search: "file_serp_2" });
+    expect(readZonesFile(env)).toEqual({ brightdata: { search: "file_serp_2", scrape: "file_unlocker" } });
+    writeFileSync(path, "{ not json");
+    expect(readZonesFile(env)).toEqual({});
+    expect(zonesFor(ADAPTERS.brightdata, {}, env)).toEqual({});
+    saveZones(env, "brightdata", { scrape: "fresh" });
+    expect(readZonesFile(env)).toEqual({ brightdata: { scrape: "fresh" } });
+    // Only adapters with zones read it.
+    expect(zonesFor(ADAPTERS.tavily, {}, env)).toEqual({});
   });
 
   it("reads each zone from its environment variable first, then config", () => {

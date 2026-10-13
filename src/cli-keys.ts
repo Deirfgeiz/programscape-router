@@ -25,7 +25,7 @@ export interface KeysOptions {
   platform?: NodeJS.Platform;
   /** For `keys set brightdata`'s zone step, which calls Bright Data with the new key. Defaults to the global fetch. */
   fetch?: FetchLike;
-  /** Where the config lookup starts, for saving zones. Defaults to process.cwd(). */
+  /** Where the config lookup starts (keys set brightdata reads it to say when config's zones win). Defaults to process.cwd(). */
   cwd?: string;
 }
 

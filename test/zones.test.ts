@@ -52,7 +52,8 @@ function places() {
   const cwd = join(root, "project");
   mkdirSync(cwd);
   const env = { XDG_CONFIG_HOME: join(root, "config"), XDG_STATE_HOME: join(root, "state"), PROGRAMSCAPE_ROUTER_CATALOG: "off" };
-  return { cwd, env, configPath: join(root, "config", "programscape-router", "config.json") };
+  const folder = join(root, "config", "programscape-router");
+  return { cwd, env, configPath: join(folder, "config.json"), zonesPath: join(folder, "zones.json") };
 }
 
 const KEY_PROMPT: [RegExp, string] = [/Paste your Bright Data key/, KEY];
@@ -70,8 +71,11 @@ async function run(argv: string[], routes: Record<string, Responder | Responder[
     fetch: mock.fetch,
     platform: "darwin",
   });
-  const config = existsSync(where.configPath) ? JSON.parse(readFileSync(where.configPath, "utf8")) : undefined;
-  return { code, ...out, calls: mock.calls, config, ...where };
+  // keys set never creates or edits config.json: a 1.1.0 router would refuse to start on providers.brightdata.
+  expect(existsSync(where.configPath)).toBe(false);
+  expect(existsSync(join(where.cwd, "programscape-router.json"))).toBe(false);
+  const saved = existsSync(where.zonesPath) ? JSON.parse(readFileSync(where.zonesPath, "utf8")) : undefined;
+  return { code, ...out, calls: mock.calls, saved, ...where };
 }
 
 function noSecrets(...texts: string[]) {
@@ -88,8 +92,8 @@ describe("keys set brightdata: zones", () => {
     const result = await run([], { [BRIGHTDATA_ZONE_URLS.list]: ok(fixture("brightdata-zones")) }, terminal);
     expect(result.code).toBe(0);
     expect(fakeKeyring.peek(KEYCHAIN_SERVICE, "BRIGHTDATA_API_KEY")).toBe(KEY);
-    expect(result.config).toEqual({ providers: { brightdata: { zones: { search: "programscape_serp", scrape: "web_unlocker1" } } } });
-    expect(result.out.join("")).toContain(`Saved the Bright Data zones in ${result.configPath}: search programscape_serp, page reads web_unlocker1.`);
+    expect(result.saved).toEqual({ version: 1, brightdata: { search: "programscape_serp", scrape: "web_unlocker1" } });
+    expect(result.out.join("")).toContain(`Saved the Bright Data zones in ${result.zonesPath}: search programscape_serp, page reads web_unlocker1.`);
     expect(result.calls.map((call) => [call.method, call.url])).toEqual([["GET", BRIGHTDATA_ZONE_URLS.list]]);
     expect(result.calls[0]?.headers.authorization).toBe(`Bearer ${KEY}`);
     expect(terminal.asked).toHaveLength(1);
@@ -106,7 +110,7 @@ describe("keys set brightdata: zones", () => {
     const result = await run([], { [BRIGHTDATA_ZONE_URLS.list]: ok(zones) }, terminal);
     expect(result.code).toBe(0);
     expect(terminal.shown()).toContain("Your account has 2 SERP API zones. Which one should search use?\n  1. serp_a\n  2. serp_b\n");
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "serp_b", scrape: "web_unlocker1" });
+    expect(result.saved.brightdata).toEqual({ search: "serp_b", scrape: "web_unlocker1" });
   });
 
   it("offers to create a missing zone, and creates nothing on Enter (the default is No)", async () => {
@@ -119,7 +123,7 @@ describe("keys set brightdata: zones", () => {
     expect(terminal.left()).toBe(0);
     expect(result.calls.some((call) => call.method === "POST")).toBe(false);
     expect(result.out.join("")).toContain("Nothing was created.");
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "programscape_serp" });
+    expect(result.saved.brightdata).toEqual({ search: "programscape_serp" });
     expect(result.err.join("")).toContain(
       "No Web Unlocker API zone is set up, so Bright Data won't be used for page reads. Run `programscape-router keys set brightdata` again (or set BRIGHTDATA_UNLOCKER_ZONE).",
     );
@@ -136,7 +140,7 @@ describe("keys set brightdata: zones", () => {
     const result = await run([], { [BRIGHTDATA_ZONE_URLS.list]: ok([{ name: "browser1", type: "browser_api" }]) }, terminal);
     expect(terminal.left()).toBe(0);
     expect(result.calls.some((call) => call.method === "POST")).toBe(false);
-    expect(result.config).toBeUndefined();
+    expect(result.saved).toBeUndefined();
   });
 
   it("creates the zone on yes, with the documented body, and never shows any of the answer", async () => {
@@ -152,8 +156,8 @@ describe("keys set brightdata: zones", () => {
       [BRIGHTDATA_ZONE_URLS.create, { zone: { name: "programscape_unlocker", type: "unblocker" }, plan: { type: "unblocker" } }],
     ]);
     expect(result.out.join("")).toContain("Created programscape_unlocker for page reads in your Bright Data account.");
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "programscape_serp", scrape: "programscape_unlocker" });
-    noSecrets(result.all(), terminal.shown(), JSON.stringify(result.config));
+    expect(result.saved.brightdata).toEqual({ search: "programscape_serp", scrape: "programscape_unlocker" });
+    noSecrets(result.all(), terminal.shown(), JSON.stringify(result.saved));
   });
 
   it("creates the SERP zone with serp: true", async () => {
@@ -164,7 +168,7 @@ describe("keys set brightdata: zones", () => {
       terminal,
     );
     expect(result.calls.find((call) => call.method === "POST")?.body).toEqual({ zone: { name: "programscape_serp", type: "unblocker" }, plan: { type: "unblocker", serp: true } });
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "programscape_serp", scrape: "web_unlocker1" });
+    expect(result.saved.brightdata).toEqual({ search: "programscape_serp", scrape: "web_unlocker1" });
   });
 
   it("when creating is refused (403), explains the Admin key and the dashboard, then asks for the name", async () => {
@@ -180,7 +184,7 @@ describe("keys set brightdata: zones", () => {
     expect(result.err.join("")).toContain("Bright Data didn't let this key create programscape_unlocker (HTTP 403): creating zones needs an Admin key.");
     expect(result.err.join("")).toContain("create the zone in Bright Data's dashboard instead, under Web Access API");
     expect(terminal.shown()).toContain("Each zone's name is at the top of its page in Bright Data, under Web Access API.");
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "programscape_serp", scrape: "my_unlocker" });
+    expect(result.saved.brightdata).toEqual({ search: "programscape_serp", scrape: "my_unlocker" });
     expect(result.code).toBe(0);
     noSecrets(result.all(), terminal.shown());
   });
@@ -201,22 +205,36 @@ describe("keys set brightdata: zones", () => {
     // Nothing is offered for creation from an empty list: it says nothing about the account.
     expect(terminal.shown()).not.toContain("[y/N]");
     expect(result.calls.some((call) => call.method === "POST")).toBe(false);
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "programscape_serp", scrape: "web_unlocker1" });
+    expect(result.saved.brightdata).toEqual({ search: "programscape_serp", scrape: "web_unlocker1" });
   });
 
-  it("keeps the rest of an existing config, and replaces the zones found again", async () => {
+  it("never edits an existing config.json, merges zones.json on a re-run, and says when config's own zones win", async () => {
     const where = places();
-    mkdirSync(join(where.cwd), { recursive: true });
     const local = join(where.cwd, "programscape-router.json");
-    writeFileSync(local, JSON.stringify({ headsUp: { days: 14 }, providers: { brightdata: { paid: true, zones: { search: "old_serp", scrape: "old_unlocker" } } } }));
-    const terminal = scripted([KEY_PROMPT]);
-    const mock = mockFetch({ [BRIGHTDATA_ZONE_URLS.list]: ok(fixture("brightdata-zones")) });
-    const out = io();
-    expect(await main(["keys", "set", "brightdata"], out.streams, { env: where.env, cwd: where.cwd, stdin: terminal.input as never, promptOutput: terminal.output, fetch: mock.fetch, platform: "darwin" })).toBe(0);
-    expect(JSON.parse(readFileSync(local, "utf8"))).toEqual({
-      headsUp: { days: 14 },
-      providers: { brightdata: { paid: true, zones: { search: "programscape_serp", scrape: "web_unlocker1" } } },
-    });
+    const handWritten = JSON.stringify({ headsUp: { days: 14 }, providers: { brightdata: { paid: true, zones: { scrape: "config_unlocker" } } } });
+    writeFileSync(local, handWritten);
+    const go = async (argv: string[], routes: Record<string, Responder>) => {
+      const out = io();
+      const code = await main(["keys", "set", "brightdata", "--stdin", ...argv], out.streams, {
+        env: where.env,
+        cwd: where.cwd,
+        stdin: Readable.from([`${KEY}\n`]) as never,
+        fetch: mockFetch(routes).fetch,
+        platform: "darwin",
+      });
+      return { code, out: out.out.join("") };
+    };
+    const first = await go(["--search-zone", "serp_one"], { [BRIGHTDATA_ZONE_URLS.list]: ok([{ name: "web_unlocker1", type: "unblocker" }]) });
+    expect(first.code).toBe(0);
+    expect(first.out).toContain("Your config file's providers.brightdata.zones names config_unlocker for page reads, and it wins over zones.json.");
+    expect(JSON.parse(readFileSync(where.zonesPath, "utf8"))).toEqual({ version: 1, brightdata: { search: "serp_one", scrape: "web_unlocker1" } });
+    // A re-run naming only the search zone keeps the page-read one.
+    await go(["--search-zone", "serp_two", "--scrape-zone", "web_unlocker1"], {});
+    const third = await go(["--search-zone", "serp_three"], { [BRIGHTDATA_ZONE_URLS.list]: ok([]) });
+    // The page-read zone saved earlier still counts as set up.
+    expect(third.code).toBe(0);
+    expect(JSON.parse(readFileSync(where.zonesPath, "utf8"))).toEqual({ version: 1, brightdata: { search: "serp_three", scrape: "web_unlocker1" } });
+    expect(readFileSync(local, "utf8")).toBe(handWritten);
     expect(existsSync(where.configPath)).toBe(false);
   });
 
@@ -225,13 +243,13 @@ describe("keys set brightdata: zones", () => {
     const result = await run([], { [BRIGHTDATA_ZONE_URLS.list]: () => new Response("Invalid token", { status: 401 }) }, terminal);
     expect(result.code).toBe(1);
     expect(result.err.join("")).toContain("Bright Data refused this key when listing its zones (HTTP 401).");
-    expect(result.config).toBeUndefined();
+    expect(result.saved).toBeUndefined();
   });
 
   it("leaves a zone its environment variable names alone", async () => {
     const terminal = scripted([KEY_PROMPT]);
     const result = await run([], { [BRIGHTDATA_ZONE_URLS.list]: ok(fixture("brightdata-zones")) }, terminal, { BRIGHTDATA_SERP_ZONE: "env_serp" });
-    expect(result.config.providers.brightdata.zones).toEqual({ scrape: "web_unlocker1" });
+    expect(result.saved.brightdata).toEqual({ scrape: "web_unlocker1" });
     expect(result.out.join("")).toContain("BRIGHTDATA_SERP_ZONE is set in this environment, so search use that zone (it wins over config).");
     expect(result.code).toBe(0);
   });
@@ -243,7 +261,7 @@ describe("keys set brightdata --stdin: zones", () => {
     expect(result.code).toBe(0);
     expect(result.calls).toHaveLength(0);
     expect(fakeKeyring.peek(KEYCHAIN_SERVICE, "BRIGHTDATA_API_KEY")).toBe(KEY);
-    expect(result.config.providers.brightdata.zones).toEqual({ search: "my_serp", scrape: "my_unlocker" });
+    expect(result.saved.brightdata).toEqual({ search: "my_serp", scrape: "my_unlocker" });
     noSecrets(result.all());
   });
 
@@ -254,13 +272,13 @@ describe("keys set brightdata --stdin: zones", () => {
     ];
     const result = await run(["--stdin"], { [BRIGHTDATA_ZONE_URLS.list]: ok(zones), [BRIGHTDATA_ZONE_URLS.create]: ok(CREATED) });
     expect(result.calls.map((call) => call.method)).toEqual(["GET"]);
-    expect(result.config).toBeUndefined();
+    expect(result.saved).toBeUndefined();
     expect(result.err.join("")).toContain("Your account has several SERP API zones; name one with --search-zone.");
     expect(result.err.join("")).toContain("Run `programscape-router keys set brightdata` in a terminal, or pass --scrape-zone <name> (or set BRIGHTDATA_UNLOCKER_ZONE).");
     expect(result.code).toBe(1);
 
     const found = await run(["--stdin", "--search-zone", "serp_b"], { [BRIGHTDATA_ZONE_URLS.list]: ok(fixture("brightdata-zones")) });
-    expect(found.config.providers.brightdata.zones).toEqual({ search: "serp_b", scrape: "web_unlocker1" });
+    expect(found.saved.brightdata).toEqual({ search: "serp_b", scrape: "web_unlocker1" });
     expect(found.code).toBe(0);
   });
 

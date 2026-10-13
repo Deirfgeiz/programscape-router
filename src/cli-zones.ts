@@ -5,8 +5,9 @@
  * Dave, October 12, 2026: "Find, then offer to create". After the key is saved, the router lists the account's zones
  * and takes the search (`type: "serp"`) and page-read (`type: "unblocker"`) ones, asking which when there are several
  * of a kind. When one is missing, it asks before creating it, and creates nothing unless the answer is yes. Zone names
- * are not secrets, so they go in config (`providers.brightdata.zones`); BRIGHTDATA_SERP_ZONE and
- * BRIGHTDATA_UNLOCKER_ZONE override them.
+ * are not secrets. They go in zones.json in the config folder, never config.json, which 1.1.0 and earlier would refuse
+ * to start with (see zonesPath). BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE, and config
+ * `providers.brightdata.zones`, win over it.
  *
  * Live (October 12): a key without Admin permission lists `[]`, not an error, so an empty list leads to asking for the
  * names, never to "you have no zones". Creating a zone needs an Admin or Ops key, and its answer holds the zone's proxy
@@ -15,7 +16,7 @@
  * Without a terminal (`--stdin`) nothing is asked and nothing is created: `--search-zone` and `--scrape-zone` name the
  * zones, and a capability without one is filled from the zone list only when the list has exactly one of its kind.
  */
-import { ConfigError, saveZones, zoneName } from "./config.js";
+import { ConfigError, type RouterConfig, loadConfig, saveZones, zoneName, zonesFor } from "./config.js";
 import { type PromptInput, type PromptOutput, readVisible } from "./prompt.js";
 import { type BrightDataZone, ZONE_NAMES, ZONE_TYPES, brightdata, createZone, listZones } from "./providers/brightdata.js";
 import { type CallContext, type FetchLike, ProviderCallError } from "./providers/http.js";
@@ -29,6 +30,7 @@ export interface ZoneIo {
 export interface ZoneSetupOptions {
   key: string;
   env: Record<string, string | undefined>;
+  /** Where the config lookup starts, to say when config.json's own zones win over the ones saved. */
   cwd: string;
   fetch: FetchLike;
   /** Zones named on the command line (`--search-zone`, `--scrape-zone`), already checked. */
@@ -170,20 +172,35 @@ export async function setUpBrightDataZones(io: ZoneIo, options: ZoneSetupOptions
   >;
   if (Object.keys(toSave).length > 0) {
     try {
-      const path = saveZones(options.env, options.cwd, "brightdata", toSave);
+      const path = saveZones(options.env, "brightdata", toSave);
       const named = CAPABILITIES.filter((capability) => toSave[capability]).map((capability) => `${WORDS[capability]} ${toSave[capability]}`);
       io.stdout(`Saved the Bright Data zones in ${path}: ${named.join(", ")}.\n`);
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
-      const zones = JSON.stringify({ providers: { brightdata: { zones: toSave } } });
-      io.stderr(`${error.message}\nAdd this to your config yourself: ${zones}\n`);
+      const names = CAPABILITIES.filter((capability) => toSave[capability]).map((capability) => `${envVars[capability]}=${toSave[capability]}`);
+      io.stderr(`${error.message}\nSet them in your environment instead: ${names.join(" ")}\n`);
       return 1;
+    }
+  }
+  let config: RouterConfig = {};
+  try {
+    config = loadConfig(options.env as NodeJS.ProcessEnv, options.cwd).config;
+  } catch {
+    // A config that can't be read is the router's to report; it doesn't change what was saved.
+  }
+  const configZones = config.providers?.brightdata?.zones ?? {};
+  for (const capability of CAPABILITIES) {
+    const zone = configZones[capability];
+    if (zone && !fromEnv.includes(capability) && zone !== toSave[capability]) {
+      io.stdout(`Your config file's providers.brightdata.zones names ${zone} for ${WORDS[capability]}, and it wins over zones.json.\n`);
     }
   }
   for (const capability of fromEnv) {
     io.stdout(`${envVars[capability]} is set in this environment, so ${WORDS[capability]} use that zone (it wins over config).\n`);
   }
-  const notSetUp = CAPABILITIES.filter((capability) => !chosen[capability] && !fromEnv.includes(capability));
+  // What the router will use now: this run's zones, and any saved before or named in config or the environment.
+  const effective = zonesFor(brightdata, config, options.env);
+  const notSetUp = CAPABILITIES.filter((capability) => !effective[capability]);
   for (const capability of notSetUp) {
     io.stderr(
       `No ${PRODUCT[capability]} zone is set up, so Bright Data won't be used for ${WORDS[capability]}. ` +

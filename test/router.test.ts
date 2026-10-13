@@ -1,4 +1,8 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { saveZones } from "../src/config.js";
 import type { RouterConfig } from "../src/config.js";
 import { type RouterOptions, RouterError, createRouter } from "../src/router.js";
 import { BRIGHTDATA_ZONES, URLS, brightdata, fixture, mockFetch, ok, status, timeout, type Responder } from "./helpers.js";
@@ -456,6 +460,21 @@ describe("Bright Data", () => {
     expect(calls.filter((call) => call.url === URLS.brightdataRequest).map((call) => (call.body as { zone: string }).zone)).toEqual([
       "config_serp",
       "config_unlocker",
+    ]);
+  });
+
+  it("uses the zones keys set saved in zones.json when neither the environment nor config names them", async () => {
+    const env = { XDG_CONFIG_HOME: mkdtempSync(join(tmpdir(), "psr-router-zones-")) };
+    saveZones(env, "brightdata", { search: "saved_serp", scrape: "saved_unlocker" });
+    const { router, calls } = setup(
+      { [URLS.brightdataRequest]: brightdata(ok(fixture("brightdata-search")), SCRAPED), [URLS.brightdataBalance]: ok(fixture("brightdata-balance")) },
+      { BRIGHTDATA_API_KEY: "brd", ...env } as never,
+    );
+    await router.search({ query: "q" });
+    await router.scrape({ url: "https://example.com/" });
+    expect(calls.filter((call) => call.url === URLS.brightdataRequest).map((call) => (call.body as { zone: string }).zone)).toEqual([
+      "saved_serp",
+      "saved_unlocker",
     ]);
   });
 

@@ -159,7 +159,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
 
 /**
  * The zone each capability uses, for an adapter that needs zones: its environment variable when set (so
- * BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE win), otherwise config `providers.<id>.zones`. Empty otherwise.
+ * BRIGHTDATA_SERP_ZONE and BRIGHTDATA_UNLOCKER_ZONE win), then config `providers.<id>.zones` (written by hand; needs
+ * 1.2.0 or later), then zones.json (written by `keys set`). Empty for an adapter without zones.
  */
 export function zonesFor(
   adapter: Pick<ProviderAdapter, "id" | "zoneEnvVars">,
@@ -167,10 +168,13 @@ export function zonesFor(
   env: Record<string, string | undefined>,
 ): Partial<Record<Capability, string>> {
   if (!adapter.zoneEnvVars) return {};
+  let file: ReturnType<typeof readZonesFile> | undefined;
+  const saved = () => (file ??= readZonesFile(env));
   const zones: Partial<Record<Capability, string>> = {};
   for (const capability of CAPABILITIES) {
     const envVar = adapter.zoneEnvVars[capability];
-    const zone = (envVar ? env[envVar]?.trim() : undefined) || config.providers?.[adapter.id]?.zones?.[capability];
+    const zone =
+      (envVar ? env[envVar]?.trim() : undefined) || config.providers?.[adapter.id]?.zones?.[capability] || saved()[adapter.id]?.[capability];
     if (zone) zones[capability] = zone;
   }
   return zones;
@@ -183,37 +187,51 @@ export function missingZones(adapter: ProviderAdapter, zones: Partial<Record<Cap
 }
 
 /**
- * Saves zone names (never a key) in `providers.<id>.zones` of the config file in use, or in a new config.json in the
- * config folder when there is none. Zones already there for other capabilities are kept. The file is checked against
- * the schema before it is written, and written atomically. Returns its path. Throws ConfigError.
+ * Where `keys set brightdata` keeps the zones it finds, creates or is told: zones.json in the config folder, beside
+ * config.json. It is a separate file because 1.1.0 and earlier check config.json strictly and refuse to start on a
+ * provider they don't know, so writing `providers.brightdata` there would break a founder's older router still
+ * running (a pinned or cached npx, an MCP client started before the update). Older versions never read zones.json.
  */
-export function saveZones(
-  env: NodeJS.ProcessEnv,
-  cwd: string,
-  id: ProviderId,
-  zones: Partial<Record<Capability, string>>,
-): string {
-  const path = configCandidates(env, cwd).find((candidate) => existsSync(candidate)) ?? join(configDir(env), "config.json");
-  let raw: Record<string, unknown> = {};
-  if (existsSync(path)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(path, "utf8"));
-    } catch (error) {
-      throw new ConfigError(`${path} is not valid JSON, so the zones weren't saved: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new ConfigError(`${path} is not a JSON object, so the zones weren't saved.`);
-    raw = parsed as Record<string, unknown>;
+export function zonesPath(env: Record<string, string | undefined>, platform: NodeJS.Platform = process.platform): string {
+  return join(configDir(env, platform), "zones.json");
+}
+
+const zonesFileSchema = z.object({
+  version: z.literal(1),
+  brightdata: zoneSettings.optional(),
+});
+
+/** The zones in zones.json, per provider. An unreadable or invalid file counts as none (keys set writes it again). */
+export function readZonesFile(env: Record<string, string | undefined>): Partial<Record<ProviderId, Partial<Record<Capability, string>>>> {
+  const path = zonesPath(env);
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = zonesFileSchema.safeParse(JSON.parse(readFileSync(path, "utf8")));
+    return parsed.success && parsed.data.brightdata ? { brightdata: parsed.data.brightdata } : {};
+  } catch {
+    return {};
   }
-  const providers = (typeof raw.providers === "object" && raw.providers !== null ? raw.providers : {}) as Record<string, Record<string, unknown>>;
-  const current = providers[id] ?? {};
-  const existing = (typeof current.zones === "object" && current.zones !== null ? current.zones : {}) as Record<string, unknown>;
-  const next = { ...raw, providers: { ...providers, [id]: { ...current, zones: { ...existing, ...zones } } } };
-  parseConfig(next, path);
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(next, null, 2)}\n`);
-  renameSync(temp, path);
+}
+
+/**
+ * Saves zone names (never a key) for `id` in zones.json, keeping zones already there for its other capability, and
+ * writes it atomically. Never touches config.json. Returns the file's path. Throws ConfigError when it can't be written.
+ */
+export function saveZones(env: Record<string, string | undefined>, id: ProviderId, zones: Partial<Record<Capability, string>>): string {
+  const path = zonesPath(env);
+  const current = readZonesFile(env);
+  const next = { version: 1 as const, ...current, [id]: { ...current[id], ...zones } };
+  const checked = zonesFileSchema.safeParse(next);
+  if (!checked.success) throw new ConfigError(`The zones to save aren't valid: ${checked.error.issues.map((issue) => issue.message).join("; ")}`);
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const temp = `${path}.${process.pid}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(checked.data, null, 2)}\n`);
+    renameSync(temp, path);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? ` (${String((error as { code?: unknown }).code)})` : "";
+    throw new ConfigError(`Couldn't write ${path}${code}, so the zones weren't saved.`);
+  }
   return path;
 }
 
