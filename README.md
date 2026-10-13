@@ -87,8 +87,13 @@ Checked October 12, 2026, against Bright Data's docs and live answers on a found
   several of a kind). When one is missing, it asks: *Create programscape_serp (search) / programscape_unlocker (page
   reads) in your Bright Data account? Free-tier credits cover them; nothing is bought. [y/N]*. Nothing is created
   unless you answer yes. If it can't list or create them, it asks for the names: each zone's name is at the top of
-  its page in Bright Data, under **Web Access API**. Zone names aren't secrets, so they go in your config file
-  (`providers.brightdata.zones`); `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` override them. In a script,
+  its page in Bright Data, under **Web Access API**. Zone names aren't secrets. `keys set` keeps them in
+  `zones.json` in the router's config folder, beside `config.json` (see [Local files](#local-files)), and never
+  writes `config.json`: router 1.1.0 and earlier refuse to start on a provider they don't know there, so a zone
+  saved in `config.json` would stop an older router you still have running (a pinned or cached `npx`, or an MCP
+  client started before you updated). `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` win over everything, then
+  `providers.brightdata.zones` if you write it in your config by hand (it needs 1.2.0 or later), then
+  `zones.json`. In a script,
   `keys set brightdata --stdin --search-zone <name> --scrape-zone <name>` asks nothing and creates nothing.
   Without its zone, Bright Data is skipped for that capability, and `check` and `status` say how to set it up.
 - **Which key you need.** Listing and creating zones and reading the balance need an **Admin** key. Searches and
@@ -557,7 +562,7 @@ Config is optional. The router looks in this order:
 |---|---|
 | `order.search`, `order.scrape` | Your order. Leave it out to use credits ending first. |
 | `providers.<id>.credits[]` | Credits you hold. `label`, `expiresOn` (YYYY-MM-DD, usable through that day, UTC), `remaining`, `award`, `unit`. All optional; what you leave out stays unknown. |
-| `providers.brightdata.zones` | `{ "search": "<SERP API zone>", "scrape": "<Web Unlocker API zone>" }`: the zones in your Bright Data account. `keys set brightdata` fills it in. `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` win over it. Only Bright Data takes zones. |
+| `providers.brightdata.zones` | `{ "search": "<SERP API zone>", "scrape": "<Web Unlocker API zone>" }`: the zones in your Bright Data account, if you'd rather write them here by hand. Needs 1.2.0 or later: 1.1.0 refuses to start on it. `keys set brightdata` doesn't write it; it keeps the zones in `zones.json`, which this wins over. `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` win over both. Only Bright Data takes zones. |
 | `providers.<id>.paid: true` | You pay as you go with this provider; once its known credits are spent, it goes last. |
 | `providers.<id>.paid: false` | You don't pay with this provider; once its known credits are spent, it is skipped. |
 | `timeoutMs` | Per-call timeout (default 30 s for search, 60 s for scrape; 60 s for a Bright Data search). |
@@ -566,7 +571,10 @@ Config is optional. The router looks in this order:
 | `headsUp.days` | The [heads-up](#runway-and-the-heads-up) threshold, in days (default 30). `0` turns the heads-up off. |
 | `providers.<id>.programscapeProgram` | The program on your Programscape plan that this provider's live balance belongs to, when your plan has several from that provider (or the router can't tell). |
 
-Keys never go in the config file. The router rejects unknown fields with a message that says which one.
+Keys never go in the config file. The router rejects unknown fields with a message that says which one. The one
+exception, from 1.2.0 on: settings under `providers` for a provider this version doesn't know (one a newer version
+added, in a config you share with it) are ignored, with a one-line note on stderr and in `status`, so they never
+stop the router. Router 1.1.0 and earlier still refuse to start on them.
 
 ## Sync balances to your Programscape plan (optional)
 
@@ -771,10 +779,15 @@ keeps at most 500.
 **`catalog.json`** keeps the last answer from Programscape's public catalog, which providers it asked about, and when
 (see [Programs that can add more](#programs-that-can-add-more)).
 
+**`zones.json`** (in the config folder, beside `config.json`, not the state folder) keeps the Bright Data zones
+`keys set brightdata` found, created or was told: `{ "version": 1, "brightdata": { "search": "programscape_serp",
+"scrape": "web_unlocker1" } }`. Zone names only, never a key. It is apart from `config.json` so that an older router
+never sees it (see [Bright Data](#bright-data-new-in-12)).
+
 **`notices.json`** keeps, per provider, the UTC day its last heads-up went out in a tool result, and when the programs
 were first shown after `keys set`. Nothing else.
 
-Delete any of them at any time; the router starts it again.
+Delete any of them at any time; the router starts it again (for `zones.json`, run `keys set brightdata` again).
 
 ## Troubleshooting
 

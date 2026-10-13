@@ -25,10 +25,14 @@ Built on Bright Data's docs and live answers on a founder's account (October 12,
   no leads to asking for the names, with where to find them. Nothing of the create answer, which holds the zone's
   password, is read or shown. With `--stdin` nothing is asked or created: `--search-zone` and `--scrape-zone` name the
   zones, and the list fills one in only when it has exactly one of its kind.
-- Config `providers.brightdata.zones: { search, scrape }` (only Bright Data takes zones), saved by `keys set` into the
-  config file in use or a new `config.json`. `BRIGHTDATA_SERP_ZONE` and `BRIGHTDATA_UNLOCKER_ZONE` win over it. Without
-  its zone, Bright Data is skipped for that capability with the fix; `check` reports it as not set up
-  (`providers[].skipped`, or `providers[].notSetUp` for one of the two), not as a failed call.
+- **Where zones are kept.** `keys set` saves them in `zones.json` in the config folder (`{ "version": 1, "brightdata":
+  { "search", "scrape" } }`, written atomically, merged on a re-run), never in `config.json`: 1.1.0 checks
+  `config.json` strictly and refuses to start on a provider it doesn't know, so a zone saved there would stop a
+  founder's older router still running (a pinned or cached `npx`, an MCP client started before the update). Each zone
+  resolves from `BRIGHTDATA_SERP_ZONE` / `BRIGHTDATA_UNLOCKER_ZONE`, then config `providers.brightdata.zones: { search,
+  scrape }` (written by hand; needs 1.2.0 or later; only Bright Data takes zones), then `zones.json`. Without its zone,
+  Bright Data is skipped for that capability with the fix; `check` reports it as not set up (`providers[].skipped`, or
+  `providers[].notSetUp` for one of the two), not as a failed call.
 - **Failures inside a 200.** Any `x-brd-error-code` or `x-brd-err-code`, or an `x-brd-status-code` of 400 or more,
   in the response headers or inside a `format: "json"` wrapper's `headers`, fails the call: unlock failures such as
   `captcha` are `provider_error` for search and `fetch_failed` for a page (failover, Bright Data stays on);
@@ -48,6 +52,10 @@ Built on Bright Data's docs and live answers on a founder's account (October 12,
 
 ### Changed
 
+- **Forward compatibility.** Settings under `providers` for a provider this version doesn't know are ignored with a
+  one-line note (on stderr at startup, and in `status` as `configNotes`) instead of stopping the router, so a config
+  shared with a newer version never breaks this one. Everything else stays strict, including an unknown provider in
+  an order. `parseConfigWithNotes()` returns the notes, and `loadConfig()`'s result carries them as `notes`.
 - Adapters can read response headers and the raw body of every answer, 2xx included (`inspect`), and a failure can
   carry our own fix words (shown by `check` in place of the class hint) and switch a provider off for the session
   over a wrong setting. `sync` reports a shown-only balance as skipped, with the reason.
