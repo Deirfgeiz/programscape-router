@@ -94,6 +94,8 @@ export interface RouterStatus {
   providers: ProviderStatus[];
   /** Why the OS keychain could not be read at startup, when a key was looked for there and it could not be. */
   keychainNote?: string;
+  /** What the router ignored in the config file (settings for a provider this version doesn't know). */
+  configNotes?: string[];
   order: Record<Capability, CapabilityOrder>;
   /** The opt-in balance sync to the founder's Programscape plan, from local files only (no network call). */
   programscape: ProgramscapeSyncStatus;
@@ -196,6 +198,8 @@ export function createRouter(options: RouterOptions = {}): Router {
   const located = options.config ? { path: undefined, config: options.config } : loadConfig(env, options.cwd);
   const config = located.config;
   const configPath = located.path ?? null;
+  const configNotes = "notes" in located ? (located.notes ?? []) : [];
+  for (const note of configNotes) log(note);
   const ledgerPath = options.ledgerPath === false ? null : (options.ledgerPath ?? defaultLedgerPath(env));
   const ledger = ledgerPath ? new Ledger(ledgerPath, log) : undefined;
   const readingsPath = options.readingsPath === false ? null : (options.readingsPath ?? defaultReadingsPath(env));
@@ -518,6 +522,7 @@ export function createRouter(options: RouterOptions = {}): Router {
         ledgerPath,
         providers,
         ...(resolvedKeys.keychainNote ? { keychainNote: resolvedKeys.keychainNote } : {}),
+        ...(configNotes.length > 0 ? { configNotes } : {}),
         order: { search: orderFor("search", all), scrape: orderFor("scrape", all) },
         programscape: await balanceSync.status(),
         headsUp,

@@ -26,7 +26,7 @@ export { resolveKeys } from "./keys.js";
 export type { ResolvedKeys, KeySource } from "./keys.js";
 
 // Config.
-export { loadConfig, parseConfig, ConfigError } from "./config.js";
+export { loadConfig, parseConfig, parseConfigWithNotes, ConfigError } from "./config.js";
 export type { RouterConfig, CreditEntry, ConfigLocation } from "./config.js";
 
 // The live check (`programscape-router check`).

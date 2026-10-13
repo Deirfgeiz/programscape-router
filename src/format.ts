@@ -57,6 +57,7 @@ export function formatStatus(status: RouterStatus): string {
   const lines: string[] = [
     `programscape-router status at ${status.asOf}`,
     `Config: ${status.configPath ?? "none found (defaults apply)"}`,
+    ...(status.configNotes ?? []).map((note) => `  ${note}`),
     `Ledger: ${status.ledgerPath ? `${status.ledgerPath} (counts only)` : "off"}`,
     "",
     "Providers",

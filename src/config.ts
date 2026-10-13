@@ -106,10 +106,33 @@ export class ConfigError extends Error {
   }
 }
 
-/** Validate a parsed config object, with messages a founder can act on. */
+/** Validate a parsed config object, with messages a founder can act on. Settings for an unknown provider are ignored. */
 export function parseConfig(input: unknown, source = "config"): RouterConfig {
-  const result = configSchema.safeParse(input);
-  if (result.success) return result.data;
+  return parseConfigWithNotes(input, source).config;
+}
+
+/**
+ * Like parseConfig, and says what it ignored. For forward compatibility from 1.2.0 on, settings under `providers` for
+ * a provider this version doesn't know (one a newer version added, in a config shared with it) are ignored with a
+ * note instead of stopping the router. Everything else stays strict.
+ */
+export function parseConfigWithNotes(input: unknown, source = "config"): { config: RouterConfig; notes: string[] } {
+  const notes: string[] = [];
+  let checked = input;
+  if (typeof input === "object" && input !== null && !Array.isArray(input)) {
+    const providers = (input as Record<string, unknown>).providers;
+    if (typeof providers === "object" && providers !== null && !Array.isArray(providers)) {
+      const known = Object.fromEntries(Object.entries(providers).filter(([id]) => (PROVIDER_IDS as readonly string[]).includes(id)));
+      for (const id of Object.keys(providers)) {
+        if (!(id in known)) {
+          notes.push(`Ignored providers.${JSON.stringify(id).slice(1, -1).slice(0, 40)} in ${source}: not a provider this version of the router knows (a newer version may).`);
+        }
+      }
+      checked = { ...(input as Record<string, unknown>), providers: known };
+    }
+  }
+  const result = configSchema.safeParse(checked);
+  if (result.success) return { config: result.data, notes };
   const lines = result.error.issues.map((issue) => {
     const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "(top level)";
     return `  - ${path}: ${issue.message}`;
@@ -122,6 +145,8 @@ export interface ConfigLocation {
   /** The file used, or undefined when none was found (defaults apply). */
   path: string | undefined;
   config: RouterConfig;
+  /** What was ignored in the file (settings for a provider this version doesn't know), in words. */
+  notes?: string[];
 }
 
 /**
@@ -152,7 +177,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
       const reason = error instanceof Error ? error.message : String(error);
       throw new ConfigError(`${path} is not valid JSON: ${reason}`);
     }
-    return { path, config: parseConfig(raw, path) };
+    const { config, notes } = parseConfigWithNotes(raw, path);
+    return { path, config, ...(notes.length > 0 ? { notes } : {}) };
   }
   return { path: undefined, config: {} };
 }
