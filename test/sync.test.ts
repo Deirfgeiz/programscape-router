@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { createConnection } from "node:net";
+import { Server, createConnection } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli-main.js";
 import type { RouterConfig } from "../src/config.js";
 import { connect, disconnect } from "../src/programscape/connect.js";
@@ -101,10 +101,17 @@ describe("connect", () => {
   it("listens for the sign-in redirect on 127.0.0.1 only, so no firewall asks to open a port", async () => {
     const fake = fakeProgramscape();
     const env = homes();
+    const listeners = vi.spyOn(Server.prototype, "listen");
     const reachable: Record<string, boolean> = {};
     const tryConnect = (host: string, port: number) =>
       new Promise<boolean>((resolve) => {
         const socket = createConnection({ host, port });
+        // A firewall may silently drop a connection to the LAN address instead of refusing it.
+        // Bound the negative probe and close it so this test never waits for the OS TCP timeout.
+        socket.setTimeout(1000, () => {
+          socket.destroy();
+          resolve(false);
+        });
         socket.once("connect", () => {
           socket.destroy();
           resolve(true);
@@ -118,6 +125,8 @@ describe("connect", () => {
       print: () => {},
       openBrowser: async (authorizationUrl) => {
         const port = Number(new URL(new URL(authorizationUrl).searchParams.get("redirect_uri") ?? "").port);
+        // Check the actual binding too: a firewall could hide an accidentally exposed listener from the probes.
+        expect(listeners.mock.instances.map((server) => (server as Server).address())).toContainEqual({ address: "127.0.0.1", family: "IPv4", port });
         reachable.loopback = await tryConnect("127.0.0.1", port);
         reachable.ipv6Loopback = await tryConnect("::1", port);
         const lan = Object.values(networkInterfaces())

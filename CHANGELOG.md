@@ -8,6 +8,7 @@ commands and their `--json` output, the MCP tools, and the config file format.
 
 Bright Data: Google search and page reads through zones in the founder's own account, and its paid balance. Refs #5.
 Built on Bright Data's docs and live answers on a founder's account (October 12, 2026), which win where they differ.
+October 20 release validation and live-check limitations are recorded in [the release checks](docs/releases/1.2.0.md).
 
 ### Added
 
@@ -57,6 +58,8 @@ Built on Bright Data's docs and live answers on a founder's account (October 12,
   proxy's code as Bright Data's. Message-only `x-brd-error` / `x-brd-err-msg` failures also trigger failover instead of
   accepting an empty result or error page as success. Regression tests cover the previously missed cases and routing
   behavior after quota and transient errors.
+- Bound the OAuth callback test's negative network probes so a firewall that drops LAN connections cannot hang
+  validation. The test also checks the real server address to catch a listener exposed beyond IPv4 loopback.
 
 ### Changed
 
