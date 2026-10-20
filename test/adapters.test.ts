@@ -103,6 +103,46 @@ describe("Bright Data", () => {
     expect(await searchOnce(okHeader.fetch)).toEqual([]);
   });
 
+  it("reads documented Proxy-Status errors in direct and wrapped responses", async () => {
+    const cases = [
+      ["client_10100", 502, "exhausted"],
+      ["client_10020", 407, "exhausted"],
+      ["client_10110", 429, "rate_limited"],
+      ["policy_20020", 403, "provider_error"],
+    ] as const;
+    for (const [code, received, outcome] of cases) {
+      const value = `brd.superproxy.io; received-status=${received}; error=http_request_denied; details="${code}: request failed"`;
+      const direct = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "proxy-status": value }, JSON.stringify({ organic: [] })) });
+      expect(await failure(searchOnce(direct.fetch))).toMatchObject({ outcome, code, status: received });
+      const wrapped = mockFetch({ [URLS.brightdataRequest]: ok({ status_code: received, headers: { "Proxy-Status": value }, body: "" }) });
+      expect(await failure(scrapeOnce(wrapped.fetch))).toMatchObject({ outcome: outcome === "provider_error" ? "fetch_failed" : outcome, code, status: received });
+    }
+  });
+
+  it("handles quoted Proxy-Status details and multiple hops without reading another proxy's codes", async () => {
+    const value = 'other.example; error=http_request_denied; details="client_10020: unrelated", brd.superproxy.io; received-status=429; error=http_request_denied; details="client_10110: retry, later; please"';
+    const limited = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "proxy-status": value }, JSON.stringify({ organic: [] })) });
+    expect(await failure(searchOnce(limited.fetch))).toMatchObject({ outcome: "rate_limited", code: "client_10110", status: 429 });
+    const unrelated = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "proxy-status": 'other.example; details="client_10020: unrelated"' }, JSON.stringify({ organic: [] })) });
+    expect(await searchOnce(unrelated.fetch)).toEqual([]);
+    const success = mockFetch({ [URLS.brightdataRequest]: brdHeaders({ "proxy-status": "brd.superproxy.io; received-status=200" }, JSON.stringify({ organic: [] })) });
+    expect(await searchOnce(success.fetch)).toEqual([]);
+  });
+
+  it("fails over when Bright Data reports only an error message or a Proxy-Status error without a code", async () => {
+    const cases: Array<Record<string, string>> = [
+      { "x-brd-error": "Could not unlock this page" },
+      { "x-brd-err-msg": "Proxy request failed" },
+      { "proxy-status": "brd.superproxy.io; error=http_request_error" },
+    ];
+    for (const headers of cases) {
+      const direct = mockFetch({ [URLS.brightdataRequest]: brdHeaders(headers, JSON.stringify({ organic: [] })) });
+      expect((await failure(searchOnce(direct.fetch))).outcome).toBe("provider_error");
+      const wrapped = mockFetch({ [URLS.brightdataRequest]: ok({ status_code: 200, headers, body: "# Looks like content" }) });
+      expect((await failure(scrapeOnce(wrapped.fetch))).outcome).toBe("fetch_failed");
+    }
+  });
+
   it("reads the failure inside a format-json wrapper's headers", async () => {
     const wrapper = { status_code: 502, headers: { "X-Brd-Error-Code": "captcha", "x-brd-error": "redirect location was rejected" }, body: "" };
     const { fetch } = mockFetch({ [URLS.brightdataRequest]: ok(wrapper) });

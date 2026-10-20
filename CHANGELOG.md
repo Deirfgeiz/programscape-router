@@ -4,10 +4,13 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
-## 1.2.0 (unreleased)
+## 1.2.0 (October 20, 2026)
 
 Bright Data: Google search and page reads through zones in the founder's own account, and its paid balance. Refs #5.
 Built on Bright Data's docs and live answers on a founder's account (October 12, 2026), which win where they differ.
+Live checks on October 20 confirmed search, page reads, discovery of both existing zones and informational handling
+of a $0 paid balance. Zone creation and quota/suspension errors were not reproduced live in this continuation;
+see [the release checks](https://github.com/Deirfgeiz/programscape-router/blob/main/docs/releases/1.2.0.md).
 
 ### Added
 
@@ -49,6 +52,16 @@ Built on Bright Data's docs and live answers on a founder's account (October 12,
   permission) is an unknown balance, never a bad key.
 - Types: `Balance.informational` (shown only: never ordered on, never in a runway, never synced), the
   `brightdata` provider id, `CheckProvider.notSetUp` and `CheckCall.note` (our own words about a balance reading).
+
+### Fixed
+
+- Read Bright Data's documented RFC 9209 `Proxy-Status` errors, including quota and rate-limit codes, in direct
+  responses and JSON-wrapper headers. Quoted details and multiple proxy hops are handled without treating another
+  proxy's code as Bright Data's. Message-only `x-brd-error` / `x-brd-err-msg` failures also trigger failover instead of
+  accepting an empty result or error page as success. Regression tests cover the previously missed cases and routing
+  behavior after quota and transient errors.
+- Bound the OAuth callback test's negative network probes so a firewall that drops LAN connections cannot hang
+  validation. The test also checks the real server address to catch a listener exposed beyond IPv4 loopback.
 
 ### Changed
 
