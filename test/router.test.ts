@@ -539,6 +539,45 @@ describe("Bright Data", () => {
     expect((await router.search({ query: "q" })).routing.provider).toBe("brightdata");
   });
 
+  it("fails over on a Proxy-Status quota error and does not retry the spent provider in this session", async () => {
+    const { router, calls } = setup(
+      {
+        [URLS.brightdataRequest]: () => new Response(JSON.stringify({ organic: [] }), {
+          status: 200,
+          headers: { "proxy-status": 'brd.superproxy.io; received-status=502; error=http_request_denied; details="client_10100: Zone has reached usage limit"' },
+        }),
+        [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
+        [URLS.tavilySearch]: ok(fixture("tavily-search")),
+        [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      },
+      { ...BD, TAVILY_API_KEY: "tv" },
+      { order: { search: ["brightdata", "tavily"] } },
+    );
+    const first = await router.search({ query: "q" });
+    expect(first.routing.provider).toBe("tavily");
+    expect(first.routing.tried[0]).toMatchObject({ provider: "brightdata", outcome: "exhausted", status: 502 });
+    expect((await router.search({ query: "again" })).routing.provider).toBe("tavily");
+    expect(calls.filter((call) => call.url === URLS.brightdataRequest)).toHaveLength(1);
+  });
+
+  it("fails over on a message-only error without disabling Bright Data for the next call", async () => {
+    const { router } = setup(
+      {
+        [URLS.brightdataRequest]: [
+          () => new Response(JSON.stringify({ organic: [] }), { status: 200, headers: { "x-brd-error": "Unlock attempt failed" } }),
+          ok(fixture("brightdata-search")),
+        ],
+        [URLS.brightdataBalance]: ok(fixture("brightdata-balance")),
+        [URLS.tavilySearch]: ok(fixture("tavily-search")),
+        [URLS.tavilyUsage]: ok(fixture("tavily-usage")),
+      },
+      { ...BD, TAVILY_API_KEY: "tv" },
+      { order: { search: ["brightdata", "tavily"] } },
+    );
+    expect((await router.search({ query: "q" })).routing.provider).toBe("tavily");
+    expect((await router.search({ query: "q" })).routing.provider).toBe("brightdata");
+  });
+
   it("gives Bright Data searches 60 seconds unless config sets a timeout; other providers keep 30", async () => {
     const seen: Array<[string, number | undefined]> = [];
     const spy: Responder = (call) => {

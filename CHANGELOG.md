@@ -50,6 +50,14 @@ Built on Bright Data's docs and live answers on a founder's account (October 12,
 - Types: `Balance.informational` (shown only: never ordered on, never in a runway, never synced), the
   `brightdata` provider id, `CheckProvider.notSetUp` and `CheckCall.note` (our own words about a balance reading).
 
+### Fixed
+
+- Read Bright Data's documented RFC 9209 `Proxy-Status` errors, including quota and rate-limit codes, in direct
+  responses and JSON-wrapper headers. Quoted details and multiple proxy hops are handled without treating another
+  proxy's code as Bright Data's. Message-only `x-brd-error` / `x-brd-err-msg` failures also trigger failover instead of
+  accepting an empty result or error page as success. Regression tests cover the previously missed cases and routing
+  behavior after quota and transient errors.
+
 ### Changed
 
 - **Forward compatibility.** Settings under `providers` for a provider this version doesn't know are ignored with a

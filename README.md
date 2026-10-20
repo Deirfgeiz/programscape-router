@@ -108,8 +108,9 @@ Checked October 12, 2026, against Bright Data's docs and live answers on a found
   account balance on Bright Data's dashboard. Above $0 it counts like any live balance (in the order, the runway and
   the sync). At $0 it is shown only: it never moves Bright Data in the order and is never sent to your Programscape
   plan, since free credits may still be left.
-- **Failures inside a 200.** Bright Data often answers HTTP 200 and puts the real result in its `x-brd-*` headers.
-  The router reads those: a captcha or another unlock failure moves on to the next provider for that call (failed
+- **Failures inside a 200.** Bright Data often answers HTTP 200 and puts the real result in its `x-brd-*` or
+  `Proxy-Status` headers. The router reads both, including headers in a JSON wrapper; an error message without a
+  code also counts as a failure: a captcha or another unlock failure moves on to the next provider for that call (failed
   requests aren't billed), a rate limit is a rate limit, and `client_10100` ("Zone has reached usage limit") or
   `client_10020` ("Account is suspended") counts as spent. Those last two aren't confirmed live yet.
 

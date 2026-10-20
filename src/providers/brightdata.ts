@@ -35,6 +35,8 @@
  *   x-brd-status-code header", with the code in x-brd-error-code / x-brd-error (unlocker) or x-brd-err-code /
  *   x-brd-err-msg (proxy). With format "json" the same headers can arrive inside the body's `headers`. So any of those
  *   codes, or a result status of 400 or more, fails the call, whatever the HTTP status. Failed requests aren't billed.
+ *   October 20 release review: also read Bright Data's RFC 9209 Proxy-Status hop (received-status, error and the
+ *   documented code prefix in details), and treat a message-only x-brd-error / x-brd-err-msg as a failure.
  *   An unknown zone is HTTP 400 with a text/html body `zone "x" not found`: a setting, not a bad request, so the
  *   router switches Bright Data off for the session and tries the next provider.
  */
@@ -104,16 +106,60 @@ function fromRecord(value: unknown): HeaderLookup {
   };
 }
 
+/** Split a structured header outside quoted strings (details may contain commas, semicolons and escapes). */
+function headerParts(value: string, separator: string): string[] {
+  const parts: string[] = [];
+  let start = 0, quoted = false, escaped = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (escaped) escaped = false;
+    else if (quoted && char === "\\") escaped = true;
+    else if (char === '"') quoted = !quoted;
+    else if (!quoted && char === separator) {
+      parts.push(value.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  parts.push(value.slice(start).trim());
+  return parts;
+}
+
+/** Bright Data's documented RFC 9209 hop; other proxies' errors never become Bright Data quota codes. */
+function proxyFailure(value: string | undefined): { code?: string; status?: number; error?: string } | undefined {
+  if (!value) return undefined;
+  for (const entry of headerParts(value, ",")) {
+    const [hop, ...parameters] = headerParts(entry, ";");
+    if (hop !== "brd.superproxy.io" && hop !== '"brd.superproxy.io"') continue;
+    const fields = new Map<string, string>();
+    for (const parameter of parameters) {
+      const index = parameter.indexOf("=");
+      if (index < 1) continue;
+      const raw = parameter.slice(index + 1).trim();
+      const parsed = raw.startsWith('"') && raw.endsWith('"')
+        ? raw.slice(1, -1).replace(/\\([\\"])/g, "$1") : raw;
+      fields.set(parameter.slice(0, index).trim(), parsed);
+    }
+    const status = Number(fields.get("received-status"));
+    const failedStatus = Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined;
+    const code = /^([a-z]+_\d{5}):/.exec(fields.get("details") ?? "")?.[1];
+    const error = fields.get("error");
+    if (code || error || failedStatus !== undefined) return { code, status: failedStatus, error };
+  }
+  return undefined;
+}
+
 /**
- * The failure Bright Data reports in x-brd-* headers, or undefined when they report none. `capability` decides what an
+ * The failure Bright Data reports in x-brd-* or Proxy-Status headers, or undefined when they report none. `capability` decides what an
  * unlock failure means: a search that didn't come back, or a page that couldn't be fetched (both fail over).
  */
 export function brdFailure(capability: Capability, header: HeaderLookup, httpStatus: number): ProviderCallError | undefined {
-  const code = header("x-brd-error-code") ?? header("x-brd-err-code");
+  const proxy = proxyFailure(header("proxy-status"));
+  const code = header("x-brd-error-code") ?? header("x-brd-err-code") ?? proxy?.code;
   const resultStatus = Number(header("x-brd-status-code"));
-  const failedStatus = Number.isInteger(resultStatus) && resultStatus >= 400 ? resultStatus : undefined;
-  if (!code && failedStatus === undefined) return undefined;
-  const message = header("x-brd-error") ?? header("x-brd-err-msg") ?? `Bright Data reported ${code ?? `status ${failedStatus}`}`;
+  const failedStatus = Number.isInteger(resultStatus) && resultStatus >= 400 ? resultStatus : proxy?.status;
+  const reportedMessage = header("x-brd-error") ?? header("x-brd-err-msg");
+  if (!code && failedStatus === undefined && !reportedMessage && !proxy?.error) return undefined;
+  const message = reportedMessage ?? `Bright Data reported ${code ?? proxy?.error ?? `status ${failedStatus}`}`;
   const status = failedStatus ?? httpStatus;
   let outcome: Exclude<Outcome, "ok">;
   if (code && SPENT_CODES.has(code)) outcome = "exhausted";
@@ -152,6 +198,7 @@ function inspectRequest(capability: Capability, ctx: CallContext) {
     if (answer.status === 401 || answer.status === 403) return new ProviderCallError("unauthorized", message, answer.status, code);
     if (code && SPENT_CODES.has(code)) return new ProviderCallError("exhausted", message, answer.status, code);
     if (answer.status === 429 || (code && RATE_CODES.has(code))) return new ProviderCallError("rate_limited", message, answer.status, code);
+    if (inHeaders) return inHeaders;
     if (code && UNLOCK_CODES.includes(code)) {
       return new ProviderCallError(capability === "search" ? "provider_error" : "fetch_failed", message, answer.status, code);
     }
