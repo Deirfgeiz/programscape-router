@@ -8,7 +8,9 @@ commands and their `--json` output, the MCP tools, and the config file format.
 
 Bright Data: Google search and page reads through zones in the founder's own account, and its paid balance. Refs #5.
 Built on Bright Data's docs and live answers on a founder's account (October 12, 2026), which win where they differ.
-October 20 release validation and live-check limitations are recorded in [the release checks](docs/releases/1.2.0.md).
+Live checks on October 20 confirmed search, page reads, discovery of both existing zones and informational handling
+of a $0 paid balance. Zone creation and quota/suspension errors were not reproduced live in this continuation;
+see [the release checks](https://github.com/Deirfgeiz/programscape-router/blob/main/docs/releases/1.2.0.md).
 
 ### Added
 
