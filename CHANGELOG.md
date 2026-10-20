@@ -4,7 +4,7 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
-## 1.2.0 (unreleased)
+## 1.2.0 (October 20, 2026)
 
 Bright Data: Google search and page reads through zones in the founder's own account, and its paid balance. Refs #5.
 Built on Bright Data's docs and live answers on a founder's account (October 12, 2026), which win where they differ.
