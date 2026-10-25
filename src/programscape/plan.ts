@@ -12,6 +12,7 @@
 import { ADAPTERS } from "../providers/index.js";
 import { PROVIDER_IDS, type Balance, type ProviderId } from "../types.js";
 import { type PlanDates, isPlanDay } from "./store.js";
+import { ProgramscapeError } from "./guard.js";
 
 export interface PlanProgram {
   id: string;
@@ -30,6 +31,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const text = (value: unknown): string | undefined => (typeof value === "string" && value.length > 0 ? value : undefined);
 
+/** A company must be chosen before sync may interpret or replace the last plan read. */
+export class PlanSelectionError extends ProgramscapeError {
+  constructor(output: Record<string, unknown>) {
+    const choices = (Array.isArray(output.plans) ? output.plans : []).filter(isRecord).flatMap((plan) => {
+      const id = text(plan.id);
+      if (!id || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return [];
+      // Plan names are private saved content. Quote and bound them so control characters cannot become terminal commands.
+      const name = typeof plan.company === "string" && plan.company.trim() ? plan.company.slice(0, 120) : "Unnamed company";
+      return [`${JSON.stringify(name)}: ${id}`];
+    });
+    super("refused", `Choose which company to sync: set programscape.planId in your router config to that plan's id, then run programscape-router sync again. ${choices.slice(0, 20).join("; ")}${choices.length > 20 ? "; more companies are listed on programscape.com/plans" : ""}. No balances were sent and cached plan dates were kept.`);
+    this.name = "PlanSelectionError";
+  }
+}
 
 function providerIdOf(entry: Record<string, unknown>): string | undefined {
   if (isRecord(entry.provider)) return text(entry.provider.id);
@@ -38,6 +53,7 @@ function providerIdOf(entry: Record<string, unknown>): string | undefined {
 
 /** The kept programs on the plan `my_plan` returned. A plan with no kept program (or no plan) reads as an empty list. */
 export function readPlanPrograms(output: unknown): PlanProgram[] {
+  if (isRecord(output) && output.selectionRequired === true) throw new PlanSelectionError(output);
   if (!isRecord(output) || !Array.isArray(output.kept)) return [];
   return output.kept.flatMap((entry): PlanProgram[] => {
     if (!isRecord(entry)) return [];

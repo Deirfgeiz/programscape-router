@@ -4,6 +4,31 @@ All notable changes to programscape-router. The project follows [Semantic Versio
 1.0.0, the public API is what `programscape-router` exports from its package entry point (listed below), the CLI
 commands and their `--json` output, the MCP tools, and the config file format.
 
+## 1.2.1 (October 25, 2026)
+
+Security maintenance release carrying the hardening merged after 1.2.0. Provider behavior, public APIs and local
+state formats are unchanged. See [the release checks](https://github.com/Deirfgeiz/programscape-router/blob/v1.2.1/docs/releases/1.2.1.md).
+
+### Changed
+
+- Require the reviewed patched Node versions `22.23.4` or `24.22.1`, which reject the compromised eMudhra certificate
+  authorities. Package engine metadata is advisory unless your installer enforces it; update the Node runtime used
+  by your MCP client and restart it as well as updating the router.
+- Refresh the dependency graph with patched Body Parser 2.4.0 and Fast URI 3.1.9, and pin development tests to
+  Vitest 4.1.12. CI tests the exact supported Node versions and pins GitHub Actions to reviewed commit hashes.
+- Document the supported runtime patches and how to fetch the latest router explicitly, including for MCP clients
+  that keep an older process running.
+
+### Fixed
+
+- Support the hosted MCP's explicit company selection for multi-plan accounts. Set `programscape.planId` to the saved
+  plan's UUID; the router uses it for both `my_plan` and `report_balance`. A selection-required response now asks for
+  the company with its name/id, sends no balance and preserves cached plan dates, instead of treating it as an empty
+  plan. Changing the configured company stops using dates, success labels or automatic-sync throttles from the earlier
+  selection. Automatic selection refusal leaves the sync cache unchanged.
+- Read structured company choices on the hosted MCP's explicit `my_plan` selection error. That error flag also
+  protects earlier installed routers from treating an ambiguous account as an empty plan and clearing cached dates.
+
 ## 1.2.0 (October 20, 2026)
 
 Bright Data: Google search and page reads through zones in the founder's own account, and its paid balance. Refs #5.

@@ -43,8 +43,11 @@ function toolErrorWords(result: Record<string, unknown>): string {
   return words.length > 500 ? `${words.slice(0, 497)}...` : words || "Programscape refused the call.";
 }
 
-function toolOutput(result: unknown): unknown {
+function toolOutput(name: string, result: unknown): unknown {
   if (!isRecord(result)) throw new ProgramscapeError("invalid", "Programscape answered with an unreadable tool result.");
+  // The hosted MCP marks an ambiguous read as a tool error so older routers never read it as an empty plan.
+  // Keep its typed choices for the current sync's actionable selection error; every other tool error still refuses.
+  if (name === "my_plan" && isRecord(result.structuredContent) && result.structuredContent.selectionRequired === true) return result.structuredContent;
   if (result.isError === true) throw new ProgramscapeError("refused", toolErrorWords(result));
   if (result.structuredContent !== undefined) return result.structuredContent;
   const first = Array.isArray(result.content) ? result.content.find(isRecord) : undefined;
@@ -191,12 +194,12 @@ export class Connection {
     const call: CallTool = async (name, args) => {
       let active = await ensure(false);
       try {
-        return toolOutput(await active.callTool({ name, arguments: args }));
+        return toolOutput(name, await active.callTool({ name, arguments: args }));
       } catch (error) {
         if (!isUnauthorized(error)) throw wrap(error);
         active = await ensure(true);
         try {
-          return toolOutput(await active.callTool({ name, arguments: args }));
+          return toolOutput(name, await active.callTool({ name, arguments: args }));
         } catch (retryError) {
           if (isUnauthorized(retryError)) return this.reject();
           throw wrap(retryError);

@@ -1,6 +1,6 @@
 {
   "name": "@programscape/router",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Route an AI agent's web search and scrape calls across providers with your own API keys, spending the credits that end first. Local MCP server and library.",
   "license": "MIT",
   "author": "Forgotten Things Labs LLC",

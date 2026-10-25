@@ -51,6 +51,8 @@ const programscapeSettings = z
     }),
     /** false: never read Programscape's public catalog, and say nothing about programs (0151). */
     catalog: z.boolean({ error: () => "Use true or false." }),
+    /** Required for sync when the account has more than one saved company plan. */
+    planId: z.uuid({ error: () => "Use the saved plan's UUID from the company choices shown by sync." }),
   })
   .partial()
   .describe(

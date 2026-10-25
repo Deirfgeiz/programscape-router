@@ -299,10 +299,12 @@ describe("check", () => {
       YDC_API_KEY: "yd-x",
     };
 
+    // The redacted amount must not coincidentally appear in the report timestamp's milliseconds.
+    const now = () => new Date("2026-10-25T00:00:00.000Z");
     const text = io();
-    expect(await main(["check"], text.streams, { env, fetch })).toBe(1);
+    expect(await main(["check"], text.streams, { env, fetch, now })).toBe(1);
     const jsonOut = io();
-    expect(await main(["check", "--json"], jsonOut.streams, { env, fetch })).toBe(1);
+    expect(await main(["check", "--json"], jsonOut.streams, { env, fetch, now })).toBe(1);
     for (const output of [text.all(), jsonOut.all()]) {
       expect(output).not.toContain("abc");
       expect(output).not.toContain("777");

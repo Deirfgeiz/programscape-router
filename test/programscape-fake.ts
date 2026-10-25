@@ -55,6 +55,8 @@ export function fakeProgramscape(options: FakeOptions = {}) {
   let counter = 0;
   const behaviour = {
     kept: options.kept ?? [],
+    /** The hosted MCP's explicit-selection response for an account with several companies. */
+    planChoices: undefined as Array<{ id: string; company: string | null }> | undefined,
     failRefresh: false,
     /** Make the MCP endpoint answer with this status instead of serving. */
     mcpStatus: undefined as number | undefined,
@@ -87,10 +89,14 @@ export function fakeProgramscape(options: FakeOptions = {}) {
 
   function mcpServer(): McpServer {
     const server = new McpServer({ name: "fake-programscape", version: "0.0.0" });
-    server.registerTool("my_plan", { inputSchema: { planId: z.string().optional() } }, async () => {
+    server.registerTool("my_plan", { inputSchema: { planId: z.string().optional() } }, async (args) => {
+      if (behaviour.planChoices && !args.planId) {
+        const choices = { hasPlan: true, selectionRequired: true, plans: behaviour.planChoices };
+        return { isError: true, content: [{ type: "text", text: `Choose a company and send its planId. ${JSON.stringify(choices.plans)}` }], structuredContent: choices };
+      }
       const plan = {
         hasPlan: true,
-        plan: { id: "11111111-1111-4111-8111-111111111111", role: "owner" },
+        plan: { id: args.planId ?? "11111111-1111-4111-8111-111111111111", role: "owner" },
         kept: behaviour.kept.map((program) => ({
           id: program.id,
           name: `${program.provider} program ${program.id}`,
@@ -129,6 +135,7 @@ export function fakeProgramscape(options: FakeOptions = {}) {
       async (args) => {
         const refuse = (text: string) => ({ isError: true, content: [{ type: "text" as const, text }] });
         if (behaviour.refuseReport) return refuse(behaviour.refuseReport);
+        if (behaviour.planChoices && !args.planId) return refuse("This account has more than one plan. Send the selected planId. Nothing was changed.");
         if (args.estimate && behaviour.refuseEstimate) return refuse("Unrecognized key: estimate. Nothing was changed.");
         if (args.estimate && args.source !== "router") return refuse("Only the founder’s own router sends a runway estimate, with a balance it read. Nothing was changed.");
         const asOf = args.asOf ? Date.parse(args.asOf) : Date.now();

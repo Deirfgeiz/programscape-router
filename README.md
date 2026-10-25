@@ -226,13 +226,29 @@ Repeat for each key, then run the router in the same window.
 The npm package is `@programscape/router`. Run it with `npx @programscape/router <command>`; if you install it
 (`npm install -g @programscape/router`), the command it adds is `programscape-router`.
 
-You need Node 22 or later. On Windows: `winget install OpenJS.NodeJS.LTS`. On macOS and Linux: the LTS installer
-from [nodejs.org](https://nodejs.org), or your package manager.
+Use Node **22.23.4** or **24.22.1**, the patched versions this release supports and tests. Check `node --version`
+in the environment that starts your MCP client. Installing the router does not update Node; package engine
+metadata is advisory unless your installer enforces it. Install the supported runtime from
+[nodejs.org](https://nodejs.org) or your Node version manager before starting the router.
 
-There is nothing else to install: `npx @programscape/router` runs the latest version from
+There is nothing else to install: `npx @programscape/router@latest` fetches the latest version from
 [npm](https://www.npmjs.com/package/@programscape/router). To run the newest code from GitHub instead, use
 `npx github:Deirfgeiz/programscape-router` wherever this page says `npx @programscape/router`; it builds itself on
 install.
+
+### Update an existing installation
+
+```bash
+npx @programscape/router@latest --version
+# For a global installation:
+npm install -g @programscape/router@latest
+programscape-router --version
+```
+
+The hardened release is **1.2.1**. For an MCP configuration that uses `npx`, set its package argument to
+`@programscape/router@latest` (or pin `@programscape/router@1.2.1` for a fixed release), then restart the MCP
+client so it starts a new router process with the patched Node runtime. An existing process keeps its old code
+and runtime until it is restarted. Your provider keys and saved router configuration stay in their existing stores.
 
 The keychain support comes as a small prebuilt native module (`@napi-rs/keyring`) for macOS, Windows and Linux, so
 no compiler is needed. It is an optional dependency: if it can't be installed on your system, or you install with
@@ -568,6 +584,7 @@ Config is optional. The router looks in this order:
 | `providers.<id>.paid: false` | You don't pay with this provider; once its known credits are spent, it is skipped. |
 | `timeoutMs` | Per-call timeout (default 30 s for search, 60 s for scrape; 60 s for a Bright Data search). |
 | `programscape.sync` | `"manual"` (the default: only when you run `programscape-router sync`) or `"auto"`. Does nothing until you run `connect`. |
+| `programscape.planId` | The saved plan's UUID. Required for sync when your Programscape account has more than one company plan; `sync` lists the company names and ids to choose from. Used for both plan reads and balance reports. |
 | `programscape.catalog` | `false` turns off the read of Programscape's public catalog, and every mention of programs (see [Programs that can add more](#programs-that-can-add-more)). On by default. |
 | `headsUp.days` | The [heads-up](#runway-and-the-heads-up) threshold, in days (default 30). `0` turns the heads-up off. |
 | `providers.<id>.programscapeProgram` | The program on your Programscape plan that this provider's live balance belongs to, when your plan has several from that provider (or the router can't tell). |
@@ -602,21 +619,42 @@ What comes back is the tokens. They are stored in your OS keychain (or, where th
 logged. Redirects are never followed, as with provider calls.
 
 **Reading your plan** (each `sync`). The router opens an MCP session (which tells Programscape the client's name,
-`programscape-router`, and its version) and calls `my_plan` with no arguments. Programscape answers with your plan:
+`programscape-router`, and its version) and calls `my_plan`, with `programscape.planId` when you selected a company
+in config and no arguments otherwise. Programscape answers with your plan:
 the router uses only the programs you kept, with their ids, providers and whether each shows as approved, to decide
 which program a provider's balance belongs to. For an approved program, it also reads the expiration date and award
 you entered on your plan (your own, never worked out by Programscape), and orders that provider by the date under
 [credits ending first](#default-credits-ending-first), unless your config gives that provider a date (config wins).
 This is how Exa, Keenable and Parallel, which publish no balance, get a real end date without a config file. It keeps
 nothing from the answer but the program id it chose and, per provider, that program's id, name, date and award, in the
-local sync record. The plan is read on every sync, manual or automatic, so run `programscape-router sync` once after
-you mark a program approved or change its date. `disconnect` deletes the record, and the dates with it.
+local sync record, along with the configured plan id. Cached dates are used only for the same configured company.
+The plan is read on every sync, manual or automatic, so run `programscape-router sync` once after you mark a program
+approved or change its date. `disconnect` deletes the record, and the dates with it.
+
+If your account has several plans, the router asks you to choose a company before sending any balance. Set its id
+in your [router config](#config), then retry:
+
+```json
+{ "programscape": { "planId": "11111111-1111-4111-8111-111111111111" } }
+```
+
+Replace the example UUID with the id shown beside your company in `sync`. The same selected id goes on every plan
+read and balance report; a later update to another company cannot redirect the sync. If a choice is required, sync
+preserves its previous cached dates and sends no balance. Changing the configured id stops using the earlier
+company's dates or sync success labels until the selected plan has been read successfully. Automatic sync's six-hour
+wait applies to the same company selection, so changing or removing that selection starts a fresh sync.
+
+The hosted MCP returns a missing company choice as an explicit tool error with structured choices. Router 1.2.1
+uses those choices for the config guidance above; earlier routers stop before interpreting the response as an empty
+plan. Update older routers with `npx @programscape/router@latest` (or `npm install -g @programscape/router@latest`
+for a global install) to 1.2.1 or later before configuring `programscape.planId`, then restart the MCP client.
 
 **Each balance report.** For each provider whose balance the router reads live from the provider's own endpoint
 (Firecrawl's remaining credits, Bright Data's paid balance above $0, Linkup's and You.com's dollar balances, Tavily's
 plan credits), and only for a
 program you kept on your plan that shows as approved, it calls `report_balance` with exactly these five fields, and
-a sixth, `estimate`, when the router has a [runway estimate](#runway-and-the-heads-up) for that balance:
+a sixth, `estimate`, when the router has a [runway estimate](#runway-and-the-heads-up) for that balance. The selected
+`planId` is also sent when configured:
 
 ```json
 { "programId": "firecrawl.startup-deal", "amount": 1000, "unit": "credits", "asOf": "2026-10-11T12:00:00.000Z", "source": "router", "estimate": { "daysLeft": 21 } }
@@ -873,7 +911,7 @@ npm run build
 npm run smoke:pack   # packs the tarball, installs it in a temp project, imports it and type-checks it
 ```
 
-CI runs the first four on Ubuntu, macOS and Windows with Node 22 and 24. The pack smoke test runs on Ubuntu (with
+CI runs the first four on Ubuntu, macOS and Windows with Node 22.23.4 and 24.22.1. The pack smoke test runs on Ubuntu (with
 no keychain, where the router must still work with environment variables) and on macOS and Windows, where it also
 stores, reads and removes a key in the real OS keychain under a test service name.
 
