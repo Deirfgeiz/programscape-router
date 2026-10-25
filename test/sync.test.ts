@@ -56,6 +56,123 @@ function reports(fake: ReturnType<typeof fakeProgramscape>) {
   return fake.toolCalls.filter((call) => call.name === "report_balance").map((call) => call.arguments);
 }
 
+describe("explicit Programscape company selection", () => {
+  const selected = "11111111-1111-4111-8111-111111111111";
+  const other = "22222222-2222-4222-8222-222222222222";
+
+  it("asks for a company selection before clearing cached dates or reporting any balance", async () => {
+    const { fake, env, router } = await connected({ kept: [{ id: "firecrawl.startup-deal", provider: "firecrawl", approved: true, expiresOn: "2027-03-01" }] });
+    await router().syncBalances();
+    const cached = (await readSyncState(env)).plan;
+    expect(cached?.dates.firecrawl?.expiresOn).toBe("2027-03-01");
+    fake.toolCalls.length = 0;
+    fake.behaviour.planChoices = [{ id: selected, company: "Acme\ncompany\u001b[31m" }, { id: other, company: "Second company" }];
+
+    const error = await router().syncBalances().catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ProgramscapeError);
+    const message = (error as Error).message;
+    expect(message).toContain("programscape.planId");
+    expect(message).toContain(selected);
+    expect(message).toContain("Second company");
+    expect(message).not.toMatch(/[\n\u001b]/);
+    expect((await readSyncState(env)).plan).toEqual(cached);
+    expect(fake.toolCalls.map((call) => call.name)).toEqual(["my_plan"]);
+  });
+
+  it("uses the configured company for both its plan read and every balance report", async () => {
+    const { fake, router } = await connected();
+    fake.behaviour.planChoices = [{ id: selected, company: "Acme" }, { id: other, company: "Second company" }];
+    const result = await router({ programscape: { planId: selected } }).syncBalances();
+    expect(result[0]).toMatchObject({ provider: "firecrawl", outcome: "synced" });
+    expect(fake.toolCalls.find((call) => call.name === "my_plan")?.arguments).toEqual({ planId: selected });
+    expect(reports(fake)).toEqual([expect.objectContaining({ planId: selected })]);
+  });
+
+  it("reads company choices from an MCP isError response without touching the sync cache or reporting balances", async () => {
+    const { fake, env, router } = await connected({ kept: [{ id: "firecrawl.startup-deal", provider: "firecrawl", approved: true, expiresOn: "2027-03-01" }] });
+    await router().syncBalances();
+    const cached = await readSyncState(env);
+    fake.toolCalls.length = 0;
+    fake.behaviour.planChoices = [{ id: selected, company: "Acme" }, { id: other, company: "Second company" }];
+    const error = await router().syncBalances().catch((reason: unknown) => reason);
+    expect(error).toMatchObject({ name: "PlanSelectionError", kind: "refused" });
+    expect((error as Error).message).toContain("programscape.planId");
+    expect((error as Error).message).toContain(`${JSON.stringify("Second company")}: ${other}`);
+    expect(fake.toolCalls.map((call) => call.name)).toEqual(["my_plan"]);
+    expect(await readSyncState(env)).toEqual(cached);
+  });
+
+  it("also refuses an unselected company when sync only reads dates for a provider without a balance endpoint", async () => {
+    const { fake, env, fetch } = await connected({}, { EXA_API_KEY: "exa-KEYSECRET-3" });
+    fake.behaviour.planChoices = [{ id: selected, company: "Acme" }, { id: other, company: "Second company" }];
+    const errors: string[] = [];
+    const code = await main(["sync"], { stdout: () => {}, stderr: (line) => errors.push(line) }, { env, config: {}, fetch, ledgerPath: false });
+    expect(code).toBe(1);
+    expect(errors.join("")).toContain("programscape.planId");
+    expect(reports(fake)).toEqual([]);
+    expect((await readSyncState(env)).plan).toBeUndefined();
+  });
+
+  it("does not use cached dates from a different configured company", async () => {
+    const { env, router } = await connected({ kept: [{ id: "firecrawl.startup-deal", provider: "firecrawl", approved: true, expiresOn: "2027-03-01" }] });
+    await router({ programscape: { planId: selected } }).syncBalances();
+    const cached = (await readSyncState(env)).plan;
+    expect(cached).toMatchObject({ planId: selected, dates: { firecrawl: { expiresOn: "2027-03-01" } } });
+    const original = await router({ programscape: { planId: selected } }).status();
+    expect(original.providers.find((provider) => provider.id === "firecrawl")?.balances.some((balance) => balance.source === "plan")).toBe(true);
+    for (const config of [{ programscape: { planId: other } }, {}]) {
+      const different = await router(config).status();
+      expect(different.providers.find((provider) => provider.id === "firecrawl")?.balances.some((balance) => balance.source === "plan")).toBe(false);
+    }
+    expect((await readSyncState(env)).plan).toEqual(cached);
+  });
+
+  it("scopes automatic sync throttling and success labels to the configured company, including removing the id", async () => {
+    const { fake, router } = await connected();
+    const first = router({ programscape: { sync: "auto", planId: selected } });
+    await first.search({ query: "q" });
+    await first.flush();
+    expect(reports(fake)).toHaveLength(1);
+
+    const second = router({ programscape: { sync: "auto", planId: other } });
+    fake.behaviour.refuseReport = "Program not approved on company two. Nothing was changed.";
+    // status also refreshes balances: use manual mode for these observations so only search starts the auto task.
+    const beforeSecond = (await router({ programscape: { planId: other } }).status()).programscape;
+    expect(beforeSecond).toMatchObject({ providers: [] });
+    expect(beforeSecond).not.toHaveProperty("lastSyncedAt");
+    await second.search({ query: "q" });
+    await second.flush();
+    expect(reports(fake)).toHaveLength(2);
+    const status = (await router({ programscape: { planId: other } }).status()).programscape;
+    expect(status.providers[0]?.message).toContain("Program not approved on company two");
+    expect(status.providers[0]).toMatchObject({ outcome: "refused" });
+    expect(status.providers[0]).not.toHaveProperty("syncedAt");
+    expect(status).not.toHaveProperty("lastSyncedAt");
+
+    fake.behaviour.refuseReport = undefined;
+    const defaultPlan = router({ programscape: { sync: "auto" } });
+    await defaultPlan.search({ query: "q" });
+    await defaultPlan.flush();
+    expect(reports(fake)).toHaveLength(3);
+    expect(reports(fake).map((report) => report.planId)).toEqual([selected, other, undefined]);
+  });
+
+  it("leaves the whole sync cache unchanged after an automatic sync requires a company choice", async () => {
+    const { fake, env, router, advance, logs } = await connected({ kept: [{ id: "firecrawl.startup-deal", provider: "firecrawl", approved: true, expiresOn: "2027-03-01" }] });
+    await router().syncBalances();
+    const cached = await readSyncState(env);
+    advance(AUTO_SYNC_INTERVAL_MS + 1);
+    fake.behaviour.planChoices = [{ id: selected, company: "Acme" }, { id: other, company: "Second company" }];
+    fake.toolCalls.length = 0;
+    const auto = router({ programscape: { sync: "auto" } });
+    await auto.search({ query: "q" });
+    await auto.flush();
+    expect(logs.join("")).toContain("programscape.planId");
+    expect(fake.toolCalls.map((call) => call.name)).toEqual(["my_plan"]);
+    expect(await readSyncState(env)).toEqual(cached);
+  });
+});
+
 describe("connect", () => {
   it("registers a public client for the exact loopback redirect URI and uses PKCE S256", async () => {
     const fake = fakeProgramscape();

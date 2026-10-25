@@ -149,6 +149,12 @@ describe("config validation", () => {
 });
 
 describe("Programscape sync settings", () => {
+  it("accepts an explicit saved-plan UUID and rejects an invalid plan selection", () => {
+    const planId = "11111111-1111-4111-8111-111111111111";
+    expect(parseConfig({ programscape: { planId } })).toEqual({ programscape: { planId } });
+    expect(message({ programscape: { planId: "Acme" } })).toContain("programscape.planId");
+  });
+
   it("accepts sync auto or manual and a program per provider", () => {
     const config = { programscape: { sync: "auto" }, providers: { firecrawl: { programscapeProgram: "firecrawl.startup-deal" } } };
     expect(parseConfig(config)).toEqual(config);

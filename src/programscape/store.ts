@@ -149,6 +149,8 @@ export interface ClientCache {
 export type ProviderSyncOutcome = "synced" | "unmapped" | "refused" | "failed";
 
 export interface ProviderSyncRecord {
+  /** The configured company selection, absent for the account's default single plan. */
+  planId?: string;
   /** Last attempt of any kind; the automatic sync waits six hours from this. */
   attemptedAt: string;
   outcome: ProviderSyncOutcome;
@@ -173,7 +175,7 @@ export interface SyncState {
   lastSyncedAt?: string;
   providers: Partial<Record<ProviderId, ProviderSyncRecord>>;
   /** From the last read of the plan: when it was read, and the dates per provider. */
-  plan?: { readAt: string; dates: Partial<Record<ProviderId, PlanDates>> };
+  plan?: { readAt: string; planId?: string; dates: Partial<Record<ProviderId, PlanDates>> };
 }
 
 /**
@@ -619,7 +621,9 @@ export async function readSyncState(env: NodeJS.ProcessEnv): Promise<SyncState> 
     if (!attemptedAt || !message || !outcome) continue;
     const syncedAt = text(entry.syncedAt);
     const programId = text(entry.programId);
+    const planId = text(entry.planId);
     clean.providers[id] = {
+      ...(planId ? { planId } : {}),
       attemptedAt,
       outcome,
       message,
@@ -631,7 +635,8 @@ export async function readSyncState(env: NodeJS.ProcessEnv): Promise<SyncState> 
   const readAt = plan ? text(plan.readAt) : undefined;
   if (plan && readAt) {
     const dates = isRecord(plan.dates) ? plan.dates : {};
-    clean.plan = { readAt, dates: {} };
+    const planId = text(plan.planId);
+    clean.plan = { readAt, ...(planId ? { planId } : {}), dates: {} };
     for (const id of PROVIDER_IDS) {
       const entry = dates[id];
       const parsed = isRecord(entry) ? readPlanDates(entry) : undefined;

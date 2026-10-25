@@ -3,7 +3,8 @@
  *
  * Off until `programscape-router connect`. Then `programscape-router sync` sends, for each provider whose balance the
  * router read live from the provider's own endpoint, exactly { programId, amount, unit, asOf, source: "router" } to
- * the `report_balance` tool, for the one kept, approved program it belongs to, plus `estimate: { daysLeft }` when the
+ * the `report_balance` tool, with the configured planId when selected, for the one kept, approved program it belongs to,
+ * plus `estimate: { daysLeft }` when the
  * router has a runway estimate for that balance (0151 ruling 2). With `programscape.sync: "auto"` in config, the same
  * happens after a balance read, at most once per provider every six hours, without ever holding up a search or scrape.
  *
@@ -18,7 +19,7 @@ import type { Balance, ProviderId } from "../types.js";
 import { type CallTool, Connection, RECONNECT_MESSAGE, REMOTE_UNCERTAIN_MESSAGE } from "./connection.js";
 import { ProgramscapeError, programscapeFetch } from "./guard.js";
 import type { RunwayEstimate } from "../runway.js";
-import { type LiveBalance, amountIssue, liveBalance, mapProgram, planDatesByProvider, readPlanPrograms } from "./plan.js";
+import { type LiveBalance, PlanSelectionError, amountIssue, liveBalance, mapProgram, planDatesByProvider, readPlanPrograms } from "./plan.js";
 import {
   type PlanDates,
   type ProviderSyncRecord,
@@ -40,6 +41,7 @@ export const MAX_ESTIMATE_DAYS = 3650;
 export type SyncMode = "manual" | "auto";
 
 export interface BalanceReport {
+  planId?: string;
   programId: string;
   amount: number;
   unit: LiveBalance["unit"];
@@ -168,6 +170,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
   const background = new Set<Promise<void>>();
   const inflight = new Set<ProviderId>();
   let warned = false;
+  const planId = config.programscape?.planId;
+  const samePlan = (record: ProviderSyncRecord | undefined) => record?.planId === planId;
 
   function updateState(change: (state: SyncState) => void): Promise<void> {
     const next = stateQueue.then(async () => {
@@ -240,12 +244,12 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
 
     // The plan is read even when no balance is due: its dates order providers that publish no balance (0151 ruling 5).
     await connection.session(async (call) => {
-      const programs = readPlanPrograms(await call("my_plan", {}));
+      const programs = readPlanPrograms(await call("my_plan", planId ? { planId } : {}));
       const overrides = Object.fromEntries(Object.entries(config.providers ?? {}).map(([id, settings]) => [id, settings?.programscapeProgram]));
       const dates = planDatesByProvider(programs, overrides);
       // A state file that can't be written costs the dates, never the balance reports.
       await updateState((state) => {
-        state.plan = { readAt: now().toISOString(), dates };
+        state.plan = { readAt: now().toISOString(), ...(planId ? { planId } : {}), dates };
       }).catch(() => undefined);
       for (const { provider, balance, estimate } of due) {
         const mapping = mapProgram(provider, programs, config.providers?.[provider]?.programscapeProgram);
@@ -253,8 +257,9 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
           results.push({ provider, outcome: "unmapped", message: `Not synced. ${mapping.message}` });
           continue;
         }
-        // Exactly these five fields (and the estimate, when there is one), and nothing else, leave for Programscape.
+        // Only the balance fields, optional selected plan id and optional estimate leave for Programscape.
         const report: BalanceReport = {
+          ...(planId ? { planId } : {}),
           programId: mapping.programId,
           amount: balance.amount,
           unit: balance.unit,
@@ -286,8 +291,9 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
     await updateState((state) => {
       for (const result of results) {
         if (result.outcome === "skipped") continue;
-        const previous = state.providers[result.provider];
+        const previous = samePlan(state.providers[result.provider]) ? state.providers[result.provider] : undefined;
         state.providers[result.provider] = {
+          ...(planId ? { planId } : {}),
           attemptedAt: at,
           outcome: result.outcome,
           message: clean(result.message),
@@ -315,15 +321,17 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
       const state = await readSyncState(env);
       const connectionState = await readConnectionState(env);
       const on = connectionState?.phase === "connected" && (await hasTokenFile(env));
+      const selectedProviders = Object.entries(state.providers).filter(([, entry]) => samePlan(entry));
+      const lastSyncedAt = selectedProviders.map(([, entry]) => entry?.syncedAt).filter((at): at is string => at !== undefined).sort().at(-1);
       return {
         sync: on ? "on" : "off",
         mode,
-        ...(state.lastSyncedAt && on ? { lastSyncedAt: state.lastSyncedAt } : {}),
+        ...(lastSyncedAt && on ? { lastSyncedAt } : {}),
         ...(connectionState?.phase === "cleanup-needed" ? { note: REMOTE_UNCERTAIN_MESSAGE } : {}),
         ...(connectionState?.phase === "sync-off" ? { note: RECONNECT_MESSAGE } : {}),
         ...(connectionState?.phase === "awaiting-consent" ? { note: PENDING_MESSAGE } : {}),
         providers: on
-          ? Object.entries(state.providers).map(([provider, entry]) => ({ provider: provider as ProviderId, ...(entry as ProviderSyncRecord) }))
+          ? selectedProviders.map(([provider, entry]) => ({ provider: provider as ProviderId, ...(entry as ProviderSyncRecord) }))
           : [],
       };
     },
@@ -337,6 +345,9 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
       try {
         results = await run(readings);
       } catch (error) {
+        // An unselected company is never an empty plan, even for providers whose only sync is reading plan dates.
+        // Stop before recording a failed attempt or replacing cached plan information.
+        if (error instanceof PlanSelectionError) throw error;
         // Sign-in refused: sync has turned itself off, and the caller says so.
         if (error instanceof ProgramscapeError && error.kind === "rejected") throw new ProgramscapeError("rejected", clean(error.message));
         results = [
@@ -350,7 +361,8 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
 
     async planDates() {
       if ((await readConnectionState(env))?.phase !== "connected") return {};
-      return (await readSyncState(env)).plan?.dates ?? {};
+      const cached = (await readSyncState(env)).plan;
+      return cached?.planId === config.programscape?.planId ? cached?.dates ?? {} : {};
     },
 
     afterBalanceRead(provider, balances, runway) {
@@ -359,7 +371,7 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
       const task = (async () => {
         if (!(await connected())) return;
         const state = await readSyncState(env);
-        const last = state.providers[provider]?.attemptedAt;
+        const last = samePlan(state.providers[provider]) ? state.providers[provider]?.attemptedAt : undefined;
         if (last && now().getTime() - Date.parse(last) < AUTO_SYNC_INTERVAL_MS) return;
         if (!liveBalance(balances)) return;
         let timer: NodeJS.Timeout | undefined;
@@ -375,7 +387,7 @@ export function createBalanceSync(options: BalanceSyncOptions): BalanceSync {
           if (result && result.outcome !== "synced") warnOnce(`Programscape sync for ${provider}: ${clean(result.message)}`);
         } catch (error) {
           // Record the attempt so the six-hour wait applies to failures too.
-          await record(failedAll([reading], error)).catch(() => undefined);
+          if (!(error instanceof PlanSelectionError)) await record(failedAll([reading], error)).catch(() => undefined);
           if (error instanceof ProgramscapeError && error.kind === "rejected") warnOnce(clean(error.message));
           else warnOnce(`Programscape sync for ${provider} failed: ${error instanceof ProgramscapeError ? clean(error.message) : "unexpected error"} Searches and scrapes are unaffected.`);
         } finally {
